@@ -1,0 +1,32 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Users Rules: 
+    // Users can only read and modify their own document (where their uid matches the document ID)
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // 2. Sessions Rules:
+    // Manage collaborative sessions securely
+    match /sessions/{sessionId} {
+      // Anyone who is logged in can create a session, provided they are making themselves the host
+      allow create: if request.auth != null && request.resource.data.hostId == request.auth.uid;
+      
+      // Any authenticated user can read a session (necessary when trying to join one via code)
+      allow read: if request.auth != null;
+      
+      // Only the host, existing participants, or new users adding themselves to the participants list can update the document
+      allow update: if request.auth != null && (
+        resource.data.hostId == request.auth.uid || 
+        resource.data.participants[request.auth.uid] != null ||
+        request.resource.data.participants[request.auth.uid] != null
+      );
+
+      // Only the session host can delete the session
+      allow delete: if request.auth != null && resource.data.hostId == request.auth.uid;
+    }
+  }
+}
