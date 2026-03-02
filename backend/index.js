@@ -4,7 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { v4: uuidv4 } = require('uuid');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -15,6 +15,23 @@ const { pipeline } = require('stream/promises');
 const archiver = require('archiver');
 
 dotenv.config();
+
+// Helper: kill entire process tree (critical on Windows where child.kill doesn't kill child processes)
+function killProcessTree(child) {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      // /F: Forcefully terminate /T: Terminate child processes
+      execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore' });
+    } else {
+      // Kill entire process group (pid is negative)
+      // This requires the process to have been started with { detached: true }
+      process.kill(-child.pid, 'SIGKILL');
+    }
+  } catch (e) {
+    // Process may have already exited
+  }
+}
 
 const app = express();
 app.use(cors());
@@ -142,7 +159,7 @@ async function findFreePort(startPort = 5001, maxTries = 5) {
     }
     console.log(`Port ${port} in use, trying next...`);
   }
-  
+
   throw new Error(`Could not find a free port between ${startPort} and ${startPort + maxTries - 1}`);
 }
 
@@ -161,7 +178,7 @@ const langConfig = {
   "css": { ext: ".css", type: "browser" },
 };
 
-async function executeCode(language, code, stdin = "") {
+async function executeCode(language, code, stdin = "", projectFiles = {}) {
   if (!code || !code.trim()) {
     return { error: "Empty code" };
   }
@@ -174,7 +191,7 @@ async function executeCode(language, code, stdin = "") {
 
   // HTML/CSS are browser-based, not executable via CLI
   if (config.type === "browser") {
-    return { 
+    return {
       stdout: `📄 ${language.toUpperCase()} files cannot be executed directly.\n\n💡 To view your ${language.toUpperCase()} code:\n   • Open the file in a web browser\n   • Or save it locally and open in your browser\n\n📝 Tip: For HTML, create an index.html file and open it in any browser.`,
       info: "browser_only"
     };
@@ -183,7 +200,23 @@ async function executeCode(language, code, stdin = "") {
   // Create unique temp directory
   const tmpDir = path.join(os.tmpdir(), `codeforge-${uuidv4()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
-  
+
+  // Write all project files to preserve folder structure (e.g. templates/index.html)
+  if (projectFiles && typeof projectFiles === 'object' && Object.keys(projectFiles).length > 0) {
+    console.log('📂 executeCode project files received:', Object.keys(projectFiles));
+    for (const [pFile, content] of Object.entries(projectFiles)) {
+      const fullPath = path.join(tmpDir, pFile);
+      const dir = path.dirname(fullPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(fullPath, content || '');
+    }
+    console.log('📂 Files on disk after writing:', fs.readdirSync(tmpDir, { recursive: true }));
+  } else {
+    console.log('⚠️ executeCode: No project files received');
+  }
+
   const fileName = lang === "java" ? "Main.java" : `main${config.ext}`;
   const filePath = path.join(tmpDir, fileName);
 
@@ -217,13 +250,13 @@ async function executeCode(language, code, stdin = "") {
       cmd = config.cmd;
       // Allow overriding python alias on windows
       if (cmd === 'python' && process.platform !== 'win32') {
-         cmd = 'python3';
+        cmd = 'python3';
       }
       args = [filePath];
     }
 
     return await new Promise((resolve) => {
-      const child = spawn(cmd, args, { cwd: tmpDir });
+      const child = spawn(cmd, args, { cwd: tmpDir, detached: process.platform !== 'win32' });
 
       let stdoutData = "";
       let stderrData = "";
@@ -235,7 +268,7 @@ async function executeCode(language, code, stdin = "") {
       const timer = setTimeout(() => {
         if (!isDone) {
           isDone = true;
-          child.kill('SIGKILL');
+          killProcessTree(child);
           resolve({
             error: "Execution timed out",
             stdout: stdoutData,
@@ -249,7 +282,7 @@ async function executeCode(language, code, stdin = "") {
         stdoutData += data.toString();
         if (stdoutData.length > max_size) {
           stdoutData = stdoutData.slice(0, max_size) + "\n... [Output Truncated]";
-          child.kill('SIGKILL');
+          killProcessTree(child);
         }
       });
 
@@ -257,7 +290,7 @@ async function executeCode(language, code, stdin = "") {
         stderrData += data.toString();
         if (stderrData.length > max_size) {
           stderrData = stderrData.slice(0, max_size) + "\n... [Output Truncated]";
-          child.kill('SIGKILL');
+          killProcessTree(child);
         }
       });
 
@@ -270,7 +303,7 @@ async function executeCode(language, code, stdin = "") {
         if (isDone) return;
         isDone = true;
         clearTimeout(timer);
-        
+
         const executionTime = (Date.now() - startTime) / 1000;
         resolve({
           stdout: stdoutData,
@@ -279,7 +312,7 @@ async function executeCode(language, code, stdin = "") {
           execution_time: executionTime
         });
       });
-      
+
       child.on('error', (err) => {
         if (isDone) return;
         isDone = true;
@@ -294,15 +327,27 @@ async function executeCode(language, code, stdin = "") {
 
   } catch (e) {
     if (e.exit_code !== undefined) {
-       // Compilation error case
-       return { stdout: e.stdout, stderr: e.stderr, exit_code: e.exit_code, execution_time: 0 };
+      // Compilation error case
+      return { stdout: e.stdout, stderr: e.stderr, exit_code: e.exit_code, execution_time: 0 };
     }
     return { error: e.message || "Execution failed" };
   } finally {
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch (err) {
-      console.error(`Failed to remove temp dir ${tmpDir}:`, err);
+    // Retry cleanup with delay to handle EBUSY from recently killed processes
+    const cleanupRetries = 3;
+    for (let i = 0; i < cleanupRetries; i++) {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        break;
+      } catch (err) {
+        if (err.code === 'EBUSY' && i < cleanupRetries - 1) {
+          await new Promise(r => setTimeout(r, 500 * (i + 1)));
+        } else if (i === cleanupRetries - 1) {
+          // Last resort: schedule cleanup for later
+          setTimeout(() => {
+            try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+          }, 5000);
+        }
+      }
     }
   }
 }
@@ -441,7 +486,7 @@ io.on('connection', (socket) => {
       userData.name,
       data.settings || {}
     );
-    
+
     session.host_sid = sid;
     session.addParticipant(userData.uid, userData.name, sid, "host");
 
@@ -567,7 +612,7 @@ io.on('connection', (socket) => {
     console.log(`▶️ run_code: ${language} for ${userName}`);
 
     try {
-      const result = await executeCode(language, code);
+      const result = await executeCode(language, code, "", data.projectFiles || {});
       result.executed_by = userName;
 
       // Broadcast to room so others see the execution
@@ -583,7 +628,7 @@ io.on('connection', (socket) => {
       }
     } catch (e) {
       const errorResult = { error: e.message || "Execution error", executed_by: userName };
-      
+
       if (sessionId && sessionId !== "standalone") {
         socket.to(sessionId).emit("execution_result", errorResult);
       }
@@ -616,6 +661,99 @@ io.on('connection', (socket) => {
     const sessionId = userData.session_id;
     socket.to(sessionId).emit("file_update", data);
   });
+
+  // Terminal: run a command with streaming output (no timeout)
+  let terminalProcess = null;
+  let terminalProjectDir = null;
+
+  socket.on('terminal_run', (data) => {
+    const { command, files: userFiles } = data;
+
+    // Kill any existing terminal process first
+    if (terminalProcess) {
+      try { killProcessTree(terminalProcess); } catch { }
+      terminalProcess = null;
+    }
+
+    // Clean up previous project dir
+    if (terminalProjectDir) {
+      try { fs.rmSync(terminalProjectDir, { recursive: true, force: true }); } catch { }
+    }
+
+    // Create temp project directory and write session files
+    const projectDir = path.join(os.tmpdir(), `codeforge-terminal-${Date.now()}`);
+    fs.mkdirSync(projectDir, { recursive: true });
+    terminalProjectDir = projectDir;
+
+    if (userFiles && typeof userFiles === 'object') {
+      console.log('📂 Terminal files received:', Object.keys(userFiles));
+      for (const [fileName, content] of Object.entries(userFiles)) {
+        const filePath = path.join(projectDir, fileName);
+        const fileDir = path.dirname(filePath);
+        if (!fs.existsSync(fileDir)) {
+          fs.mkdirSync(fileDir, { recursive: true });
+        }
+        fs.writeFileSync(filePath, content || '');
+      }
+    }
+
+    const child = spawn(command, { shell: true, cwd: projectDir, detached: process.platform !== 'win32' });
+    terminalProcess = child;
+
+    child.stdout.on('data', (d) => {
+      socket.emit('terminal_output', { output: d.toString() });
+    });
+
+    child.stderr.on('data', (d) => {
+      socket.emit('terminal_output', { output: d.toString(), isError: true });
+    });
+
+    child.on('close', (code) => {
+      terminalProcess = null;
+      socket.emit('terminal_exit', { code });
+      // Clean up project dir after process exits
+      setTimeout(() => {
+        if (terminalProjectDir === projectDir) {
+          try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch { }
+          terminalProjectDir = null;
+        }
+      }, 2000);
+    });
+
+    child.on('error', (err) => {
+      terminalProcess = null;
+      socket.emit('terminal_output', { output: `Error: ${err.message}`, isError: true });
+    });
+  });
+
+  // Terminal: kill the running process
+  socket.on('terminal_kill', () => {
+    if (terminalProcess) {
+      try { killProcessTree(terminalProcess); } catch { }
+      terminalProcess = null;
+      socket.emit('terminal_output', { output: '\n[Process killed]', isError: false });
+    }
+    if (terminalProjectDir) {
+      setTimeout(() => {
+        try { fs.rmSync(terminalProjectDir, { recursive: true, force: true }); } catch { }
+        terminalProjectDir = null;
+      }, 2000);
+    }
+  });
+
+  // Clean up terminal on disconnect
+  socket.on('disconnect', () => {
+    if (terminalProcess) {
+      try { killProcessTree(terminalProcess); } catch { }
+      terminalProcess = null;
+    }
+    if (terminalProjectDir) {
+      setTimeout(() => {
+        try { fs.rmSync(terminalProjectDir, { recursive: true, force: true }); } catch { }
+        terminalProjectDir = null;
+      }, 2000);
+    }
+  });
 });
 
 // =============================================================================
@@ -636,27 +774,73 @@ app.post('/api/execute', verifyFirebaseToken, async (req, res) => {
   res.json(result);
 });
 
-app.post('/api/terminal', verifyFirebaseToken, (req, res) => {
-  const { command } = req.body;
-  const child = spawn(command, { shell: true });
-  
-  let stdoutData = "";
-  let stderrData = "";
+app.post('/api/terminal', verifyFirebaseToken, async (req, res) => {
+  const { command, files } = req.body;
 
-  child.stdout.on('data', d => stdoutData += d.toString());
-  child.stderr.on('data', d => stderrData += d.toString());
-  
-  child.on('close', code => {
-     res.json({
-      stdout: stdoutData,
-      stderr: stderrData,
-      exit_code: code
+  // Create a temp project directory and write session files into it
+  const projectDir = path.join(os.tmpdir(), `codeforge-terminal-${Date.now()}`);
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  try {
+    // Write user's session files to the temp project directory
+    if (files && typeof files === 'object') {
+      for (const [fileName, content] of Object.entries(files)) {
+        const filePath = path.join(projectDir, fileName);
+        const fileDir = path.dirname(filePath);
+        if (!fs.existsSync(fileDir)) {
+          fs.mkdirSync(fileDir, { recursive: true });
+        }
+        fs.writeFileSync(filePath, content || '');
+      }
+    }
+
+    const child = spawn(command, { shell: true, cwd: projectDir, detached: process.platform !== 'win32' });
+
+    let stdoutData = "";
+    let stderrData = "";
+    let isDone = false;
+
+    // Kill after 30 seconds
+    const timer = setTimeout(() => {
+      if (!isDone) {
+        isDone = true;
+        killProcessTree(child);
+        res.json({
+          stdout: stdoutData,
+          stderr: stderrData + '\n[Process timed out after 30s]',
+          exit_code: 1
+        });
+      }
+    }, 30000);
+
+    child.stdout.on('data', d => stdoutData += d.toString());
+    child.stderr.on('data', d => stderrData += d.toString());
+
+    child.on('close', code => {
+      if (isDone) return;
+      isDone = true;
+      clearTimeout(timer);
+      res.json({
+        stdout: stdoutData,
+        stderr: stderrData,
+        exit_code: code
+      });
     });
-  });
-  
-  child.on('error', err => {
-     res.json({ error: err.message });
-  });
+
+    child.on('error', err => {
+      if (isDone) return;
+      isDone = true;
+      clearTimeout(timer);
+      res.json({ error: err.message });
+    });
+  } catch (err) {
+    res.json({ error: err.message || 'Terminal command failed' });
+  } finally {
+    // Clean up after a delay to allow process to fully exit
+    setTimeout(() => {
+      try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch { }
+    }, 5000);
+  }
 });
 
 app.get('/api/languages', (req, res) => {
@@ -683,17 +867,17 @@ app.get('/api/check-docker', (req, res) => {
     '/usr/local/bin/docker',
     '/snap/bin/docker'
   ];
-  
+
   let checked = 0;
   let found = false;
-  
+
   for (const cmd of dockerCommands) {
     exec(`${cmd} --version`, (error, stdout, stderr) => {
       checked++;
       if (!error && (stdout.includes('Docker') || stderr.includes('Docker'))) {
         found = true;
       }
-      
+
       if (checked === dockerCommands.length) {
         res.json({ installed: found });
       }
@@ -701,23 +885,293 @@ app.get('/api/check-docker', (req, res) => {
   }
 });
 
+app.post('/api/build-container', async (req, res) => {
+  const { files, sessionName, action, dockerHubUsername, dockerHubPassword, cloudProvider, cloudConfig } = req.body;
+
+  if (!files || typeof files !== 'object') {
+    return res.status(400).json({ error: 'Invalid files data' });
+  }
+
+  const dockerCmd = process.platform === 'win32' ? 'docker.exe' : 'docker';
+  const sanitizedName = (sessionName || 'project').toLowerCase().replace(/[^a-z0-9]/g, '-');
+  const imageName = `codeforge/${sanitizedName}-${Date.now()}`;
+  const buildDir = path.join(os.tmpdir(), `codeforge-build-${Date.now()}`);
+
+  const isAutoImport = action === 'autoimport';
+
+  console.log(`[Docker Build] Starting build for ${imageName} with action ${action}`);
+  console.log(`[Docker Build] Files: ${Object.keys(files).join(', ')}`);
+  console.log(`[Docker Build] Build dir: ${buildDir}`);
+  console.log(`[Docker Build] Docker cmd: ${dockerCmd}`);
+
+  try {
+    execSync(`${dockerCmd} info`, { stdio: 'pipe' });
+    console.log(`[Docker Build] Docker is accessible`);
+  } catch (err) {
+    console.log(`[Docker Build] Docker info error: ${err.message}`);
+    return res.status(500).json({ error: 'Docker is not accessible. Please ensure Docker Desktop is running.', details: err.message });
+  }
+
+  try {
+    fs.mkdirSync(buildDir, { recursive: true });
+
+    const fileEntries = Object.entries(files);
+    for (const [fileName, content] of fileEntries) {
+      const filePath = path.join(buildDir, fileName);
+      const fileDir = path.dirname(filePath);
+      if (!fs.existsSync(fileDir)) {
+        fs.mkdirSync(fileDir, { recursive: true });
+      }
+      fs.writeFileSync(filePath, content || '');
+    }
+
+    let dockerfileContent = '';
+    const packageJson = files['package.json'];
+    const requirementsTxt = files['requirements.txt'];
+    const pyprojectToml = files['pyproject.toml'];
+    const indexJs = files['index.js'];
+    const mainCsproj = Object.keys(files).find(f => f.endsWith('.csproj'));
+
+    if (packageJson) {
+      const pkg = JSON.parse(packageJson);
+      if (pkg.type === 'module') {
+        dockerfileContent = `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --only=production\nCOPY . .\nEXPOSE 3000\nCMD ["node", "index.js"]`;
+      } else {
+        dockerfileContent = `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --only=production\nCOPY . .\nEXPOSE 3000\nCMD ["node", "index.js"]`;
+      }
+    } else if (requirementsTxt || pyprojectToml) {
+      dockerfileContent = `FROM python:3.11-slim\nWORKDIR /app\nCOPY requirements.txt ./\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY . .\nCMD ["python", "main.py"]`;
+    } else if (mainCsproj) {
+      dockerfileContent = `FROM mcr.microsoft.com/dotnet/sdk:8.0\nWORKDIR /app\nCOPY *.csproj ./\nRUN dotnet restore\nCOPY . .\nRUN dotnet publish -c Release -o /app/publish\nEXPOSE 8080\nCMD ["dotnet", "publish.dll"]`;
+    } else if (indexJs) {
+      dockerfileContent = `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --only=production\nCOPY . .\nEXPOSE 3000\nCMD ["node", "index.js"]`;
+    } else {
+      dockerfileContent = `FROM alpine:latest\nWORKDIR /app\nCOPY . .\nCMD ["sh"]`;
+    }
+
+    console.log(`[Docker Build] Dockerfile content:\n${dockerfileContent}`);
+
+    fs.writeFileSync(path.join(buildDir, 'Dockerfile'), dockerfileContent);
+    console.log(`[Docker Build] Dockerfile written to ${path.join(buildDir, 'Dockerfile')}`);
+    console.log(`[Docker Build] Running docker build...`);
+
+    try {
+      await new Promise((resolve, reject) => {
+        exec(`${dockerCmd} build -t ${imageName} "${buildDir}" --progress=plain`, {
+          encoding: 'utf8',
+          shell: true,
+          maxBuffer: 50 * 1024 * 1024
+        }, (error, stdout, stderr) => {
+          if (error) {
+            console.log(`[Docker Build] Build failed: ${error.message}`);
+            console.log(`[Docker Build] Output: ${stdout}\n${stderr}`);
+            reject(new Error(error.message + '\n' + stdout + '\n' + stderr));
+          } else {
+            console.log(`[Docker Build] Build succeeded`);
+            resolve();
+          }
+        });
+      });
+    } catch (err) {
+      fs.rmSync(buildDir, { recursive: true, force: true });
+      return res.status(500).json({ error: 'Docker build failed', details: err.message });
+    }
+
+    // Auto-import is satisfied by 'docker build' itself (local engine)
+    if (action === 'autoimport') {
+      fs.rmSync(buildDir, { recursive: true, force: true });
+      return res.json({ 
+        success: true, 
+        message: 'Container image built successfully and is available in Docker Desktop!', 
+        imageName: imageName 
+      });
+    }
+
+    if (action === 'dockerhub') {
+      if (!dockerHubUsername || !dockerHubPassword) {
+        exec(`${dockerCmd} rmi ${imageName}`, () => { });
+        fs.rmSync(buildDir, { recursive: true, force: true });
+        return res.status(400).json({ error: 'Docker Hub credentials required' });
+      }
+
+      const hubImageName = `${dockerHubUsername}/${sanitizedName}:latest`;
+
+      exec(`${dockerCmd} tag ${imageName} ${hubImageName}`, (err) => {
+        if (err) {
+          exec(`${dockerCmd} rmi ${imageName}`, () => { });
+          fs.rmSync(buildDir, { recursive: true, force: true });
+          return res.status(500).json({ error: 'Failed to tag image for Docker Hub' });
+        }
+
+        const loginProc = spawn(dockerCmd, ['login', '-u', dockerHubUsername, '-p', dockerHubPassword], { shell: true });
+
+        loginProc.on('close', (loginCode) => {
+          if (loginCode !== 0) {
+            exec(`${dockerCmd} rmi ${imageName} ${hubImageName}`, () => { });
+            fs.rmSync(buildDir, { recursive: true, force: true });
+            return res.status(500).json({ error: 'Failed to login to Docker Hub' });
+          }
+
+          const pushProc = spawn(dockerCmd, ['push', hubImageName], { shell: true });
+          let pushOutput = '';
+
+          pushProc.stdout.on('data', (d) => pushOutput += d.toString());
+          pushProc.stderr.on('data', (d) => pushOutput += d.toString());
+
+          pushProc.on('close', (pushCode) => {
+            exec(`${dockerCmd} logout`, () => { });
+            exec(`${dockerCmd} rmi ${imageName} ${hubImageName}`, () => { });
+            fs.rmSync(buildDir, { recursive: true, force: true });
+
+            if (pushCode !== 0) {
+              return res.status(500).json({ error: 'Failed to push to Docker Hub', details: pushOutput });
+            }
+
+            res.json({ success: true, message: `Image pushed to Docker Hub: ${hubImageName}`, imageName: hubImageName });
+          });
+        });
+      });
+      return;
+    }
+
+    if (action === 'cloud') {
+      exec(`${dockerCmd} rmi ${imageName}`, () => { });
+      fs.rmSync(buildDir, { recursive: true, force: true });
+
+      const cloudScripts = {
+        'aws': `aws ecr get-login-password --region ${cloudConfig?.region || 'us-east-1'} | docker login --username AWS --password-stdin ${cloudConfig?.registry || 'my-registry'}`,
+        'gcp': `gcloud auth configure-docker`,
+        'azure': `az acr login --name ${cloudConfig?.registry || 'myregistry'}`,
+        'kubernetes': `kubectl apply -f deployment.yaml`
+      };
+
+      res.json({
+        success: true,
+        message: `Cloud deployment configured for ${cloudProvider || 'generic'}`,
+        imageName: imageName,
+        instructions: cloudScripts[cloudProvider] || 'Build complete. Use "docker images" to view and manually deploy.'
+      });
+      return;
+    }
+
+    const saveProcess = spawn(dockerCmd, ['save', '-o', `${imageName.replace('/', '-')}.tar`, imageName], {
+      shell: true
+    });
+
+    saveProcess.on('close', async (saveCode) => {
+      const tarPath = path.join(process.cwd(), `${imageName.replace('/', '-')}.tar`);
+
+      if (saveCode !== 0 || !fs.existsSync(tarPath)) {
+        exec(`${dockerCmd} rmi ${imageName}`, () => { });
+        fs.rmSync(buildDir, { recursive: true, force: true });
+        return res.status(500).json({ error: 'Failed to save Docker image' });
+      }
+
+      if (isAutoImport) {
+        exec(`${dockerCmd} load -i "${tarPath}"`, (loadErr, loadStdout, loadStderr) => {
+          exec(`${dockerCmd} rmi ${imageName}`, () => { });
+          fs.unlinkSync(tarPath);
+          fs.rmSync(buildDir, { recursive: true, force: true });
+
+          if (loadErr) {
+            return res.status(500).json({ error: 'Failed to import Docker image', details: loadStderr });
+          }
+
+          res.json({ success: true, message: 'Container image built and imported to Docker Desktop!', output: loadStdout });
+        });
+        return;
+      }
+
+      const tarFileName = `${imageName.replace('/', '-')}-${Date.now()}.tar`;
+      const tempDir = path.join(os.tmpdir(), 'codeforge-downloads');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      const tempTarPath = path.join(tempDir, tarFileName);
+
+      fs.copyFileSync(tarPath, tempTarPath);
+      exec(`${dockerCmd} rmi ${imageName}`, () => { });
+      fs.unlinkSync(tarPath);
+      fs.rmSync(buildDir, { recursive: true, force: true });
+
+      res.json({
+        success: true,
+        downloadUrl: `/api/download-temp/${tarFileName}`,
+        fileName: tarFileName
+      });
+    });
+  } catch (error) {
+    if (fs.existsSync(buildDir)) {
+      fs.rmSync(buildDir, { recursive: true, force: true });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/download-temp/:filename', (req, res) => {
+  const { filename } = req.params;
+  const tempDir = path.join(os.tmpdir(), 'codeforge-downloads');
+  const filePath = path.join(tempDir, filename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  res.download(filePath, filename, (err) => {
+    if (!err) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (e) { }
+    }
+  });
+});
+
+app.post('/api/import-docker', async (req, res) => {
+  const { tarData, imageName } = req.body;
+
+  if (!tarData) {
+    return res.status(400).json({ error: 'No tar data provided' });
+  }
+
+  const dockerCmd = process.platform === 'win32' ? 'docker.exe' : 'docker';
+  const tempTar = path.join(os.tmpdir(), `codeforge-import-${Date.now()}.tar`);
+
+  try {
+    const buffer = Buffer.from(tarData, 'base64');
+    fs.writeFileSync(tempTar, buffer);
+
+    exec(`${dockerCmd} load -i "${tempTar}"`, (err, stdout, stderr) => {
+      fs.unlinkSync(tempTar);
+
+      if (err) {
+        return res.status(500).json({ error: 'Failed to import Docker image', details: stderr });
+      }
+
+      res.json({ success: true, message: 'Docker image imported successfully!', output: stdout });
+    });
+  } catch (error) {
+    if (fs.existsSync(tempTar)) fs.unlinkSync(tempTar);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/export-zip', async (req, res) => {
   const { files, sessionName } = req.body;
-  
+
   if (!files || typeof files !== 'object') {
     return res.status(400).json({ error: 'Invalid files data' });
   }
 
   const archive = archiver('zip', { zlib: { level: 9 } });
-  
+
   res.attachment(`${sessionName || 'codeforge'}-source.zip`);
-  
+
   archive.pipe(res);
-  
+
   for (const [fileName, content] of Object.entries(files)) {
     archive.append(content || '', { name: fileName });
   }
-  
+
   await archive.finalize();
 });
 

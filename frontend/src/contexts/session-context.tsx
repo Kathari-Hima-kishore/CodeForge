@@ -109,7 +109,7 @@ interface SessionContextType {
   updateFileContent: (id: string, content: string) => void;
   renameFile: (id: string, newName: string) => void;
   deleteFile: (id: string) => void;
-  
+
   // Folder management
   createFolder: (name: string, parentId?: string | null) => void;
   renameFolder: (id: string, newName: string) => void;
@@ -139,7 +139,9 @@ interface SessionContextType {
   kickUser: (userId: string) => Promise<void>;
 
   // Terminal
-  sendTerminalCommand: (command: string) => Promise<void>;
+  sendTerminalCommand: (command: string) => void;
+  killTerminal: () => void;
+  isTerminalRunning: boolean;
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
@@ -179,6 +181,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [output, setOutput] = useState<OutputItem[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isTerminalRunning, setIsTerminalRunning] = useState(false);
 
   // Fetch user's existing sessions using a direct query on the sessions collection
   useEffect(() => {
@@ -361,7 +364,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const updateFileContent = useCallback((id: string, content: string) => {
     setFiles(prev => {
       const updated = prev.map(f => f.id === id ? { ...f, content } : f);
-      
+
       // Debounce Firestore writes (500ms) - critical for free tier
       if (session?.sessionId) {
         if (debounceTimeoutRef.current) {
@@ -444,15 +447,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         });
         return ids;
       };
-      
+
       const idsToDelete = new Set([id, ...getAllDescendantIds(id)]);
       const updated = prev.filter(f => !idsToDelete.has(f.id));
-      
+
       if (currentFileId && idsToDelete.has(currentFileId)) {
         const remaining = updated.filter(f => !f.isFolder);
         setCurrentFileId(remaining.length > 0 ? remaining[0].id : null);
       }
-      
+
       if (session?.sessionId) {
         const sessionRef = doc(db, 'sessions', session.sessionId);
         updateDoc(sessionRef, { files: updated });
@@ -524,7 +527,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     newSocket.on('connect_error', (error) => {
       setIsConnected(false);
       setConnectionError(`Connection failed: ${error.message}`);
-      console.error('Connection error:', error);
+      console.log('Socket connection failed (this is normal if backend is not running)');
+    });
+
+    newSocket.on('error', (error) => {
+      console.log('Socket error:', error);
     });
 
     // Handle code execution results (from other users)
@@ -547,9 +554,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    // Handle terminal output
+    // Handle terminal output (streaming)
     newSocket.on('terminal_output', (data) => {
-      addOutput('output', data.output);
+      if (data.isError) {
+        addOutput('error', data.output);
+      } else {
+        addOutput('output', data.output);
+      }
+    });
+
+    // Handle terminal process exit
+    newSocket.on('terminal_exit', (data) => {
+      setIsTerminalRunning(false);
+      if (data.code !== null && data.code !== 0) {
+        addOutput('error', `[Process exited with code ${data.code}]`);
+      } else {
+        addOutput('info', '[Process exited]');
+      }
     });
 
     setSocket(newSocket);
@@ -616,7 +637,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     try {
       let isDone = false;
-      
+
       const timeoutId = setTimeout(() => {
         if (!isDone) {
           isDone = true;
@@ -625,10 +646,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       }, 35000); // slightly longer than backend timeout (30s)
 
+      // Collect all project files with full paths for multi-file support
+      const getFilePath = (file: { name: string; parentId?: string | null }): string => {
+        const parts: string[] = [file.name];
+        let current = file;
+        while (current.parentId) {
+          const parent = files.find(f => f.id === current.parentId);
+          if (parent) { parts.unshift(parent.name); current = parent; } else break;
+        }
+        return parts.join('/');
+      };
+      const projectFiles: Record<string, string> = {};
+      files.filter(f => !f.isFolder).forEach(f => {
+        projectFiles[getFilePath(f)] = f.content;
+      });
+
       socket.emit('run_code', {
         sessionId: session?.sessionId || 'standalone',
         language,
-        code
+        code,
+        projectFiles
       }, (response: any) => {
         if (isDone) return;
         isDone = true;
@@ -655,7 +692,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       addOutput('error', `❌ Failed to send execution request: ${message}`);
       setIsExecuting(false);
     }
-  }, [socket, isConnected, session?.sessionId, addOutput]);
+  }, [socket, isConnected, session?.sessionId, files, addOutput]);
 
   // Create a new session
   const createSession = useCallback(async (name: string) => {
@@ -930,37 +967,45 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [session]);
 
   // Terminal command
-  const sendTerminalCommand = useCallback(async (command: string) => {
-    if (!user || !command.trim()) return;
+  const sendTerminalCommand = useCallback((command: string) => {
+    if (!socket || !isConnected || !command.trim()) {
+      addOutput('error', '❌ Not connected to backend');
+      return;
+    }
 
     // Optimistic update
     addOutput('output', `> ${command}`);
 
-    try {
-      const token = await auth.currentUser?.getIdToken();
-      const response = await fetch(`${getDynamicBackendUrl()}/api/terminal`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          command,
-          cwd: null // Optional: support current working directory tracking later
-        })
-      });
+    // Collect non-folder files with full paths (including parent folders)
+    const fileContents: Record<string, string> = {};
+    const getFilePath = (file: FileItem): string => {
+      const parts: string[] = [file.name];
+      let current = file;
+      while (current.parentId) {
+        const parent = files.find(f => f.id === current.parentId);
+        if (parent) {
+          parts.unshift(parent.name);
+          current = parent as FileItem;
+        } else {
+          break;
+        }
+      }
+      return parts.join('/');
+    };
+    files.filter(f => !f.isFolder).forEach(f => {
+      fileContents[getFilePath(f)] = f.content;
+    });
 
-      const data = await response.json();
+    setIsTerminalRunning(true);
+    socket.emit('terminal_run', { command, files: fileContents });
+  }, [socket, isConnected, files, addOutput]);
 
-      if (data.stdout) addOutput('info', data.stdout);
-      if (data.stderr) addOutput('error', data.stderr);
-      if (data.error) addOutput('error', data.error);
-
-    } catch (error) {
-      console.error('Terminal error:', error);
-      addOutput('error', 'Failed to send command');
+  const killTerminal = useCallback(() => {
+    if (socket && isConnected) {
+      socket.emit('terminal_kill');
     }
-  }, [user, addOutput]);
+    setIsTerminalRunning(false);
+  }, [socket, isConnected]);
 
   return (
     <SessionContext.Provider
@@ -996,10 +1041,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         changeUserRole,
         kickUser,
         sendTerminalCommand,
+        killTerminal,
+        isTerminalRunning,
       }}
     >
       {children}
-    </SessionContext.Provider>
+    </SessionContext.Provider >
   );
 }
 

@@ -1,220 +1,61 @@
-# CodeForge - Development Context
+# CodeForge - Current Context & Status
 
-## Project Overview
-CodeForge is a collaborative browser IDE with real-time code execution, multi-language support, Firebase authentication, and session management.
+## Recent Changes (2026-03-02)
 
----
+### 1. Export Feature UI Freeze Fix ✅
+- **Problem**: Opening/closing "Build Container Image" dialog froze the UI (`pointer-events: none` stuck on `<body>`)
+- **Root Cause**: Radix UI `<Dialog modal>` nested inside `<DropdownMenu>` fails to clean up pointer events
+- **Fix**: Replaced with custom portal-based modal in `header.tsx`, added `resetBodyPointerEvents()` safety net
+- **Files**: `frontend/src/components/ide/header.tsx`
 
-## Changes Made
+### 2. Terminal Rewrite — Socket.IO Streaming ✅
+- **Problem**: Terminal used HTTP request-response (couldn't stream output), had 30s timeout killing long-running servers
+- **Fix**: Rewrote to use Socket.IO events for real-time streaming, no timeout, explicit kill via UI buttons
+- **Files**: 
+  - `backend/index.js` — `terminal_run`, `terminal_kill` socket events
+  - `frontend/src/contexts/session-context.tsx` — `sendTerminalCommand`, `killTerminal`, `isTerminalRunning`
+  - `frontend/src/components/ide/bottom-panel.tsx` — Stop button, trash kills process
 
-### 1. Login Flow Improvements
+### 3. Session Files Written to Disk ✅
+- **Problem**: Terminal commands couldn't access user files (`python untitled.py` → "No such file")
+- **Fix**: Frontend collects all session files with full paths (reconstructed via `parentId` chain), sends them with the command; backend writes them to a temp project directory
+- **Files**: `session-context.tsx`, `backend/index.js`
 
-**File: `frontend/src/contexts/auth-context.tsx`**
+### 4. Folder Structure Preservation ✅
+- **Problem**: Files inside folders (e.g. `templates/index.html`) were written flat to disk
+- **Fix**: Added `getFilePath()` helper that walks `parentId` chain to build paths like `templates/index.html`
+- **Applied to**: Terminal, Run button (`executeCode`), Export Source Code, Build Container
 
-- **Email existence check**: Added `checkEmailExists()` function that calls backend API `/api/check-email` to verify if email exists in Firebase before attempting login
-- **Email not found handling**: When email doesn't exist, throws `EMAIL_NOT_FOUND` error
-- **Password validation**: Added `validatePassword()` function requiring:
-  - Minimum 8 characters
-  - At least one uppercase letter
-  - At least one lowercase letter
-  - At least one number
-- **Error handling**: All Firebase auth errors converted to user-friendly messages
-- **Loading state**: Properly reset on error to prevent stuck UI
+### 5. Run Button Multi-File Support ✅
+- **Problem**: `executeCode` only wrote the single code file (as `main.py`), not other project files
+- **Fix**: Frontend sends `projectFiles` with `run_code` socket event; backend writes all files to temp dir
+- **Files**: `session-context.tsx` (added `files` to `useCallback` deps), `backend/index.js`
 
-**File: `frontend/src/components/auth/auth-page.tsx`**
+### 6. Windows Process Tree Killing ✅
+- **Problem**: `child.kill('SIGKILL')` doesn't kill child processes on Windows → Flask debug reloader spawns zombie processes that hold ports forever
+- **Fix**: Added `killProcessTree()` helper using `taskkill /F /T /PID` on Windows; replaced ALL kill calls
+- **Files**: `backend/index.js` (top of file)
 
-- Added local error state (`localError`) to handle errors properly
-- Added password requirements display for registration form
-- Updated error messages:
-  - "Email does not exist. Please check or create an account." - for unregistered emails
-  - "Invalid email or password" - for wrong password
-- Updated password minLength from 6 to 8
-- Password strength requirements shown during registration
+### 7. EBUSY Temp Dir Cleanup ✅
+- **Problem**: `fs.rmSync` failed with EBUSY after killing processes (file handles still locked)
+- **Fix**: Retry logic with delays in `executeCode`'s `finally` block
+- **Files**: `backend/index.js`
 
-### 2. Session Joining Fix (Host Disconnection Issue)
-
-**Problem**: When host disconnects from a session, the backend deletes the session from memory. When another user tries to join using the session code, backend returns "Session not found" even though the session exists in Firestore.
-
-**Solution**: Added Firestore integration to resurrect sessions.
-
-**File: `backend/server.py`**
-
-- Added Firestore client initialization (`firestore_db`)
-- Updated `join_session` socket event to check Firestore when session not in memory
-- If session exists in Firestore and is active, resurrects it in memory
-- Now participants can join sessions even after host disconnects (session persists in Firestore)
-
-### 3. Gemini Chat Integration
-
-**File: `backend/server.py`**
-
-- Added Google Generative AI SDK import and initialization
-- Added `/api/gemini-chat` endpoint:
-  - Accepts message, history, and codeContext (files + current code)
-  - Provides code context to Gemini for better assistance
-  - Supports conversation history
-- Added `/api/gemini-models` endpoint:
-  - Lists available Gemini models from Google API
-  - Caches results for 5 minutes
-  - Filters out deprecated/preview models
-- Added `/api/gemini-set-model` endpoint:
-  - Allows switching between Gemini models at runtime
-  - Validates model before switching
-
-**File: `frontend/src/components/ide/gemini-chat-panel.tsx`**
-
-- Refactored to use backend API instead of Genkit flows
-- Added collapsible history panel (click "History" button)
-- Added code extraction from Gemini responses
-- Added "Insert Code" buttons:
-  - Insert to current file
-  - Create new file with generated code
-- Shows code context (all files + current code) to Gemini
-
-### 4. Model Selector Component
-
-**File: `frontend/src/components/ide/model-selector.tsx` (NEW)**
-
-- Dropdown component to select Gemini model
-- Fetches available models from `/api/gemini-models`
-- Shows current model in header
-- Allows switching models via `/api/gemini-set-model`
-- Cached for fast loading
-
-**File: `frontend/src/components/ide/gemini-chat-panel.tsx`**
-
-- Integrated ModelSelector in header
-- Added currentModel state to track selected model
-
-### 5. Backend Environment Configuration
-
-**File: `backend/.env` (NEW)**
-
-```
-GEMINI_API_KEY=your_gemini_api_key
-```
-
-- Added .env file for backend environment variables
-- Uses python-dotenv to load variables
-
-**File: `backend/server.py`**
-
-- Added `from dotenv import load_dotenv` at startup
-- Loads .env file on server start
-
-### 6. Model Switch and API Fix (LATEST)
-
-**Problem**: The API key in `backend/.env` was not being used because:
-1. `google-generativeai` was missing from `requirements.txt`.
-2. The frontend `GeminiChatPanel` was calling a local Next.js route instead of the backend.
-3. The default model was set to `gemma-3-4b-it`, which is likely invalid.
-
-**File: `requirements.txt`**
-- Added `google-generativeai` to dependencies.
-
-**File: `backend/server.py`**
-- Changed default model to `gemini-1.5-flash`.
-- Added `@verify_firebase_token` to `/api/gemini-chat` endpoint.
-- Corrected fallback models list in `api_list_models`.
-
-**File: `frontend/src/components/ide/gemini-chat-panel.tsx`**
-- Updated fetch URL to call the backend: `${BACKEND_URL}/api/gemini-chat`.
-- Changed default model to `gemini-1.5-flash`.
-
-**Deleted: `frontend/src/app/api/gemini-chat/route.ts`**
-- Removed redundant Next.js API route to ensure calls go to the backend.
+### 8. Flask `TemplateNotFound` Error ✅
+- **Problem**: Running a Flask app that uses `render_template('index.html')` with a `templates/` folder in the IDE → Flask threw `jinja2.exceptions.TemplateNotFound: index.html`
+- **Root Cause**: Stale/zombie processes (15+) were found on port 5000. These processes were started from old "Run" button executions before the `killProcessTree` fix. When the Run button timed out (30s), it deleted the temporary directory but the Flask subprocess survived (due to `child.kill()` limitation on Windows). Visiting port 5000 hit the **old** process whose files were already deleted → TemplateNotFound.
+- **Fix**: Killed all zombie python processes and confirmed `killProcessTree` (using `taskkill /F /T /PID`) prevents future occurrences. Verified with a reproduction Flask app serving `templates/index.html`.
+- **Files**: `backend/index.js`
 
 ---
 
-## Login Flow Logic (Section 1)
+## Unresolved Issues 🔴
 
-```
-1. User enters email + password
-2. Frontend calls backend /api/check-email
-3. If email NOT found in Firebase:
-   - Show: "Email does not exist. Please check or create an account."
-4. If email EXISTS in Firebase:
-   - Attempt Firebase signInWithEmailAndPassword
-   - If wrong password:
-     - Show: "Invalid email or password"
-   - If success:
-     - Login complete, redirect to session
-```
-
----
-
-## Session Joining Logic (Updated) (Section 2)
-
-```
-1. User enters session code
-2. Frontend reads session from Firestore (always works)
-3. Socket connects to backend
-4. Backend checks in-memory sessions:
-   a. If found → Join normally
-   b. If NOT found → Check Firestore
-      - If exists and isActive → Resurrect in memory → Join
-      - If not exists or not active → Show error
-```
-
----
-
-## Gemini Chat Features
-
-1. **Code Context**: Sends all session files + current code to Gemini/Gemma
-2. **History**: Maintains conversation history for context
-3. **Model Selection**: Users can switch between available Gemini and Gemma models
-4. **Code Insertion**: 
-   - Click "Code" button on AI response
-   - Insert to current file OR create new file
-
----
-
-## Security Considerations
-
-- **Email enumeration prevention**: The backend `/api/check-email` is called before login, but the frontend shows different messages based on result
-- **Generic password error**: For existing emails with wrong password, shows same message as "email not found" to prevent enumeration
-- **Password strength**: Client-side validation with clear requirements shown to user
-
----
-
-## Files Modified
+None currently identified. Previous fixes are working as expected.
 
 | File | Changes |
 |------|---------|
-| `frontend/src/contexts/auth-context.tsx` | Added email check, password validation, error handling |
-| `frontend/src/components/auth/auth-page.tsx` | Added local error state, password requirements UI |
-| `backend/server.py` | Fixed UserNotFoundError, added Firestore, Gemini APIs, model switching, Gemma model |
-| `frontend/src/components/ide/gemini-chat-panel.tsx` | Refactored to use backend API, added code insertion, history panel, Gemma model default |
-| `frontend/src/components/ide/model-selector.tsx` | NEW - Model selection dropdown |
-| `backend/.env` | NEW - Environment variables for backend |
-
----
-
-## Testing Notes
-
-- Backend must have Firebase Admin SDK initialized with service account
-- The `/api/check-email` endpoint returns `{exists: true/false}`
-- Frontend handles both cases: email not found vs wrong password
-- Gemini API key must be valid and have quota available
-- Model list is cached; restart backend to refresh
-
----
-
-## Next Steps / Known Issues
-
-1. **API Key**: GEMINI_API_KEY must be valid with quota. Get a new key from https://aistudio.google.com/app/apikey
-2. **Gemma Model**: Default model is now `gemma-3-4b-it`. Both Gemini and Gemma models are available in the selector.
-3. **Connection Errors**: If frontend can't reach backend, check firewall/antivirus settings
-4. **Model Filtering**: Preview and experimental models are filtered out. Update filter patterns as Google releases new models.
-5. **Code Insertion**: When inserting code, language detection is basic (defaults to .py for Python, .js for JS)
-
----
-
-## Future Improvements (Suggested)
-
-1. **Session access control**: Add invite-only mode, shareable links
-2. **Rate limiting**: Prevent brute force on login
-3. **Firestore integration**: Store user profiles/settings in Firestore
-4. **Email verification**: Require email verification before login
-5. **Better code language detection**: Auto-detect language for code insertion
-6. **Terminal improvements**: Add command history, autocomplete
+| `backend/index.js` | `killProcessTree()`, `terminal_run`/`terminal_kill` socket events, `executeCode` multi-file support, debug logging |
+| `frontend/src/contexts/session-context.tsx` | Socket-based terminal, `killTerminal`, `isTerminalRunning`, `getFilePath()` for folder paths, `files` in `executeCode` deps |
+| `frontend/src/components/ide/header.tsx` | Custom portal modal for Export, `getFilePath()` for folder paths |
+| `frontend/src/components/ide/bottom-panel.tsx` | Stop button, trash kills process, running indicator |

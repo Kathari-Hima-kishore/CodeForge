@@ -1,14 +1,14 @@
 'use client';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Play, Terminal, Trash2, Loader2 } from "lucide-react";
+import { Play, Terminal, Trash2, Loader2, StopCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSession } from "@/contexts/session-context";
 import { useEffect, useRef } from "react";
 
 export function BottomPanel() {
-  const { output, isExecuting, clearOutput, isConnected, sendTerminalCommand, files, currentFileId } = useSession();
+  const { output, isExecuting, clearOutput, isConnected, sendTerminalCommand, killTerminal, isTerminalRunning, files, currentFileId } = useSession();
   const outputBottomRef = useRef<HTMLDivElement>(null);
   const terminalBottomRef = useRef<HTMLDivElement>(null);
 
@@ -57,15 +57,27 @@ export function BottomPanel() {
             </TabsTrigger>
             <TabsTrigger value="terminal" className="gap-2 text-xs data-[state=active]:bg-primary/20 data-[state=active]:text-primary">
               <Terminal className="h-3 w-3" /> Terminal
+              {isTerminalRunning && <Loader2 className="h-3 w-3 animate-spin ml-1" />}
             </TabsTrigger>
           </TabsList>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            {isTerminalRunning && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={killTerminal}
+                title="Stop running process"
+              >
+                <StopCircle className="h-4 w-4" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-muted-foreground hover:text-destructive"
-              onClick={clearOutput}
-              title="Clear output"
+              onClick={() => { killTerminal(); clearOutput(); }}
+              title="Kill process & clear output"
             >
               <Trash2 className="h-4 w-4" />
             </Button>

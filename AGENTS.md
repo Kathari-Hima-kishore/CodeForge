@@ -4,7 +4,7 @@
 
 ### Root Commands
 ```bash
-npm run dev          # Start both frontend and backend
+npm run dev          # Start both frontend and backend concurrently
 npm run build        # Build frontend for production
 npm run start        # Start both services for production
 ```
@@ -26,13 +26,6 @@ npm run dev          # Start with nodemon (auto-reload)
 npm start            # Production start
 ```
 
-### Running Tests
-No test framework currently configured. If added:
-```bash
-# Jest: npm test -- --testPathPattern="filename.spec.ts"
-# Vitest: npm test run filename
-```
-
 ---
 
 ## Code Style Guidelines
@@ -43,8 +36,6 @@ No test framework currently configured. If added:
 - **Fail fast** - validate inputs early
 - **Consistency** - match existing code patterns
 
----
-
 ### Frontend (TypeScript/React/Next.js)
 
 #### Imports Order
@@ -52,66 +43,24 @@ No test framework currently configured. If added:
 2. Third-party (`firebase/auth`, `@radix-ui/...`, `lucide-react`)
 3. Internal (`@/lib/...`, `@/components/...`, `@/contexts/...`)
 
-```typescript
-// ✅ Correct
-import React, { useState } from 'react';
-import { useAuth } from '@/contexts/auth-context';
-import { Button } from '@/components/ui/button';
-
-// ❌ Wrong
-import { Button } from '@/components/ui/button';
-import React, { useState } from 'react';
-```
-
 #### Component Structure
 - Client components must start with `'use client'`
 - Use TypeScript interfaces for props/context types
 - Use `React.forwardRef` for ref forwarding
 
-```typescript
-'use client';
-import { useState } from 'react';
-
-interface Props { title: string; onSubmit: (v: string) => void; }
-
-export function MyComponent({ title, onSubmit }: Props) {
-  const [value, setValue] = useState('');
-  return <div><h1>{title}</h1></div>;
-}
-```
-
 #### Styling
 - Use Tailwind CSS + `cn()` utility for conditional classes
 - Use Radix UI primitives for interactive components
-
-```typescript
-<div className={cn("base", isActive && "active", className)} />
-```
 
 #### Error Handling
 - Use try/catch with `unknown` type, then narrow
 - Always reset loading in `finally` block
 - Convert errors to user-friendly messages
 
-```typescript
-try {
-  setLoading(true);
-  await doSomething();
-} catch (err: unknown) {
-  const error = err as { code?: string };
-  if (error.code === 'auth/invalid-credential') {
-    throw new Error('Invalid credentials');
-  }
-  throw err;
-} finally {
-  setLoading(false);
-}
-```
-
 #### Naming Conventions
 - **Components**: PascalCase (`AuthProvider`, `ChatPanel`)
 - **Hooks**: camelCase with `use` prefix (`useAuth`)
-- **Interfaces**: PascalCase with `Props` suffix
+- **Interfaces**: PascalCase with `Props` or `Type` suffix
 - **Files**: kebab-case (`auth-context.tsx`)
 
 ---
@@ -147,20 +96,9 @@ app.post('/api/endpoint', async (req, res) => {
 - Explicit types for params/returns, infer for locals
 - Prefer `as` over angle-bracket; use `unknown` then narrow
 
-```typescript
-function greet(name: string): string {
-  const msg = `Hello, ${name}`;  // inferred
-  return msg;
-}
-
-catch (err: unknown) {
-  const error = err as { code?: string };
-}
-```
-
 ---
 
-### File Locations
+## File Locations
 
 | Category | Location |
 |----------|----------|
@@ -172,7 +110,8 @@ catch (err: unknown) {
 
 ---
 
-### Configuration
+## Configuration
+
 - Frontend port: **9002**
 - Backend port: **5001** (dynamically allocated if in use)
 - Firebase config: `frontend/.env.local`
@@ -180,7 +119,41 @@ catch (err: unknown) {
 
 ---
 
-### Git & Version Control
+## Testing
+
+No test framework currently configured. If adding tests:
+- **Jest**: `npm test -- --testPathPattern="filename.spec.ts"`
+- **Vitest**: `npm test run filename`
+
+---
+
+## Architecture Notes
+
+### Terminal System (`backend/index.js` + `session-context.tsx` + `bottom-panel.tsx`)
+- Terminal uses **Socket.IO** events (`terminal_run`, `terminal_kill`, `terminal_output`, `terminal_exit`) for real-time streaming
+- **No timeout** — processes run until user kills them via the stop/trash button
+- Session files are written to a temp directory (`codeforge-terminal-*`) with **full folder structure** preserved (e.g. `templates/index.html`)
+- File paths are reconstructed by walking the `parentId` chain in the frontend before sending to backend
+- `killProcessTree()` helper uses `taskkill /F /T /PID` on Windows to kill entire process trees (prevents zombie processes)
+
+### Code Execution / Run Button (`executeCode` in `backend/index.js`)
+- The Run button sends `run_code` via Socket.IO with `projectFiles` (all session files with full paths)
+- Backend writes all project files to a temp dir (`codeforge-{uuid}`) alongside the main code file (`main.py`, `Main.java`, etc.)
+- Has a 30s timeout — not suitable for long-running servers (use Terminal instead)
+
+### Export Feature (`header.tsx`)
+- "Build Container Image" dialog uses a **custom portal-based modal** (not Radix UI Dialog) to avoid `pointer-events: none` bug when nested inside DropdownMenu
+- `resetBodyPointerEvents()` helper ensures `pointer-events` are always restored on `<body>`
+- Export and Build both reconstruct full file paths from `parentId` chain
+
+### Windows Process Management
+- **Always use `killProcessTree()`** instead of `child.kill('SIGKILL')` — on Windows, `child.kill()` does NOT kill child processes (e.g. Flask's debug reloader spawns a subprocess that survives)
+- `killProcessTree()` is defined at the top of `backend/index.js`
+
+---
+
+## Git & Version Control
+
 - **Never commit secrets**
-- **Never use `--force` push**
+- **Never use `--force` push
 - Create commits describing the "why"

@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
-import { Share2, Users, Copy, Check, LogOut, Download, Package, FileArchive, AlertTriangle } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Share2, Users, Copy, Check, LogOut, Download, Package, FileArchive, AlertTriangle, Cloud, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Label } from "@/components/ui/label";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,14 +24,37 @@ import { Input } from "@/components/ui/input";
 import { Logo } from "@/components/logo";
 import { useAuth } from "@/contexts/auth-context";
 import { useSession } from "@/contexts/session-context";
+import type { FileItem } from "@/contexts/session-context";
 import { BACKEND_URL } from "@/lib/firebase";
+
+function resetBodyPointerEvents() {
+  document.body.style.pointerEvents = '';
+}
 
 export function IdeHeader() {
   const { user, logout } = useAuth();
   const { session, leaveSession, addOutput, files } = useSession();
   const [shareOpen, setShareOpen] = useState(false);
   const [dockerCheckOpen, setDockerCheckOpen] = useState(false);
+  const [deployOpen, setDeployOpen] = useState(false);
+  const [deployAction, setDeployAction] = useState<'download' | 'dockerhub' | 'cloud'>('download');
+  const [autoImport, setAutoImport] = useState(false);
+  const [dockerHubUsername, setDockerHubUsername] = useState('');
+  const [dockerHubPassword, setDockerHubPassword] = useState('');
+  const [cloudProvider, setCloudProvider] = useState('aws');
+  const [deploying, setDeploying] = useState(false);
   const [copied, setCopied] = useState(false);
+  const deployAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!deployOpen && !shareOpen && !dockerCheckOpen) {
+      resetBodyPointerEvents();
+    }
+  }, [deployOpen, shareOpen, dockerCheckOpen]);
+
+  useEffect(() => {
+    return () => resetBodyPointerEvents();
+  }, []);
 
   const participantCount = session ? Object.keys(session.participants).length : 0;
 
@@ -38,7 +62,6 @@ export function IdeHeader() {
     if (session?.sessionId) {
       if (navigator.clipboard) {
         navigator.clipboard.writeText(session.sessionId).catch(() => {
-          // Fallback for clipboard errors
           const textArea = document.createElement('textarea');
           textArea.value = session.sessionId;
           document.body.appendChild(textArea);
@@ -47,7 +70,6 @@ export function IdeHeader() {
           document.body.removeChild(textArea);
         });
       } else {
-        // Fallback for browsers without clipboard API
         const textArea = document.createElement('textarea');
         textArea.value = session.sessionId;
         document.body.appendChild(textArea);
@@ -72,21 +94,145 @@ export function IdeHeader() {
     }
   };
 
-  const handleBuildContainerImage = async () => {
+  const closeDeployDialog = useCallback(() => {
+    setDeployOpen(false);
+    setDeploying(false);
+    resetBodyPointerEvents();
+  }, []);
+
+  const handleBuildContainerImage = () => {
+    if (!files || files.length === 0) {
+      addOutput('error', '❌ No files to build');
+      return;
+    }
+    setDeployAction('download');
+    setDeployOpen(true);
+  };
+
+  const handleDeploy = async () => {
+    setDeploying(true);
     addOutput('info', '🔍 Checking for Docker installation...');
-    
+
     try {
       const response = await fetch(`${BACKEND_URL}/api/check-docker`);
       const data = await response.json();
-      
-      if (data.installed) {
-        addOutput('success', '✅ Docker is installed and ready!');
-      } else {
+
+      if (!data.installed) {
+        closeDeployDialog();
         setDockerCheckOpen(true);
+        return;
+      }
+
+      addOutput('info', '📦 Building container image...');
+
+      const nonFolderFiles: Record<string, string> = {};
+      const getFilePath = (file: FileItem): string => {
+        const parts: string[] = [file.name];
+        let current: FileItem = file;
+        while (current.parentId) {
+          const parent = files.find(f => f.id === current.parentId);
+          if (parent) { parts.unshift(parent.name); current = parent; } else break;
+        }
+        return parts.join('/');
+      };
+      files.filter(f => !f.isFolder).forEach(file => {
+        nonFolderFiles[getFilePath(file)] = file.content;
+      });
+
+      if (Object.keys(nonFolderFiles).length === 0) {
+        addOutput('error', '❌ No files to build');
+        return;
+      }
+
+      const buildBody: Record<string, unknown> = {
+        files: nonFolderFiles,
+        sessionName: session?.name || 'codeforge-project',
+        action: deployAction === 'download' && autoImport ? 'autoimport' : deployAction
+      };
+
+      if (deployAction === 'dockerhub') {
+        buildBody.dockerHubUsername = dockerHubUsername;
+        buildBody.dockerHubPassword = dockerHubPassword;
+      } else if (deployAction === 'cloud') {
+        buildBody.cloudProvider = cloudProvider;
+      }
+
+      const controller = new AbortController();
+      deployAbortRef.current = controller;
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+      let buildResponse;
+      try {
+        buildResponse = await fetch(`${BACKEND_URL}/api/build-container`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildBody),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (fetchErr instanceof Error && fetchErr.name === 'AbortError') {
+          addOutput('error', '⏱️ Build timed out after 2 minutes');
+        } else {
+          addOutput('error', `❌ Network error: ${fetchErr instanceof Error ? fetchErr.message : 'Unknown'}`);
+        }
+        return;
+      } finally {
+        deployAbortRef.current = null;
+      }
+
+      if (!buildResponse.ok) {
+        const errorData = await buildResponse.json().catch(() => ({}));
+        const fullMessage = errorData.details || errorData.error || 'Build failed';
+        const shortMessage = fullMessage.length > 200 ? fullMessage.substring(0, 200) + '...' : fullMessage;
+        throw new Error(shortMessage);
+      }
+
+      if (deployAction === 'download' && autoImport) {
+        const result = await buildResponse.json();
+        addOutput('success', `✅ Container image built and imported to Docker!`);
+        if (result.output) {
+          addOutput('info', `📋 ${result.output}`);
+        }
+      } else if (deployAction === 'download') {
+        const result = await buildResponse.json();
+
+        if (!result.downloadUrl) {
+          throw new Error(result.error || 'Build failed - no download URL');
+        }
+
+        const fullUrl = result.downloadUrl.startsWith('http')
+          ? result.downloadUrl
+          : `${BACKEND_URL}${result.downloadUrl}`;
+
+        const tarResponse = await fetch(fullUrl);
+        if (!tarResponse.ok) throw new Error('Download failed');
+        const blob = await tarResponse.blob();
+        const blobUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = result.fileName || `${session?.name || 'codeforge'}-container.tar`;
+        a.click();
+        setTimeout(() => window.URL.revokeObjectURL(blobUrl), 1000);
+
+        addOutput('success', '✅ Container image built! Downloading...');
+        addOutput('info', '💡 To import: docker load -i filename.tar');
+      } else if (deployAction === 'dockerhub') {
+        const result = await buildResponse.json();
+        addOutput('success', `✅ ${result.message}`);
+      } else if (deployAction === 'cloud') {
+        const result = await buildResponse.json();
+        addOutput('success', `✅ ${result.message}`);
+        if (result.instructions) {
+          addOutput('info', `📋 Instructions: ${result.instructions}`);
+        }
       }
     } catch (error) {
-      addOutput('error', '❌ Failed to check Docker installation');
-      setDockerCheckOpen(true);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      addOutput('error', `❌ Build failed: ${message}`);
+    } finally {
+      closeDeployDialog();
     }
   };
 
@@ -100,15 +246,24 @@ export function IdeHeader() {
 
     try {
       const nonFolderFiles = files.filter(f => !f.isFolder);
-      
+
       if (nonFolderFiles.length === 0) {
         addOutput('error', '❌ No source files to export');
         return;
       }
 
       const fileContents: Record<string, string> = {};
+      const getExportPath = (file: FileItem): string => {
+        const parts: string[] = [file.name];
+        let current: FileItem = file;
+        while (current.parentId) {
+          const parent = files.find(f => f.id === current.parentId);
+          if (parent) { parts.unshift(parent.name); current = parent; } else break;
+        }
+        return parts.join('/');
+      };
       nonFolderFiles.forEach(file => {
-        fileContents[file.name] = file.content;
+        fileContents[getExportPath(file)] = file.content;
       });
 
       const response = await fetch(`${BACKEND_URL}/api/export-zip`, {
@@ -123,14 +278,18 @@ export function IdeHeader() {
       }
 
       const blob = await response.blob();
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `${session?.name || 'codeforge'}-source.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+
+      setTimeout(() => {
+        a.click();
+        setTimeout(() => {
+          window.URL.revokeObjectURL(url);
+        }, 100);
+      }, 10);
 
       addOutput('success', '✅ Source code exported successfully!');
     } catch (error) {
@@ -138,6 +297,25 @@ export function IdeHeader() {
       addOutput('error', `❌ Export failed: ${message}`);
     }
   };
+
+  const handleDeployDialogChange = useCallback((open: boolean) => {
+    if (deploying) return;
+    if (!open) {
+      closeDeployDialog();
+    } else {
+      setDeployOpen(true);
+    }
+  }, [deploying, closeDeployDialog]);
+
+  const handleShareDialogChange = useCallback((open: boolean) => {
+    setShareOpen(open);
+    if (!open) resetBodyPointerEvents();
+  }, []);
+
+  const handleDockerCheckDialogChange = useCallback((open: boolean) => {
+    setDockerCheckOpen(open);
+    if (!open) resetBodyPointerEvents();
+  }, []);
 
   return (
     <>
@@ -254,7 +432,7 @@ export function IdeHeader() {
       </header>
 
       {/* Share Dialog */}
-      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+      <Dialog open={shareOpen} onOpenChange={handleShareDialogChange}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-xl">Share Session</DialogTitle>
@@ -288,7 +466,7 @@ export function IdeHeader() {
       </Dialog>
 
       {/* Docker Not Installed Alert Dialog */}
-      <Dialog open={dockerCheckOpen} onOpenChange={setDockerCheckOpen}>
+      <Dialog open={dockerCheckOpen} onOpenChange={handleDockerCheckDialogChange}>
         <DialogContent className="sm:max-w-md border-destructive/50 bg-background/95 backdrop-blur-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
@@ -309,12 +487,150 @@ export function IdeHeader() {
             </ol>
           </div>
           <div className="mt-4 flex justify-end">
-            <Button onClick={() => setDockerCheckOpen(false)} variant="default">
+            <Button onClick={() => { setDockerCheckOpen(false); resetBodyPointerEvents(); }} variant="default">
               Got it
             </Button>
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Deploy Container Dialog - non-modal to avoid pointer-events lock */}
+      {deployOpen && (
+        <div className="fixed inset-0 z-50">
+          <div className="fixed inset-0 bg-black/80" onClick={() => !deploying && closeDeployDialog()} />
+          <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md">
+            <div className="bg-background border border-border rounded-lg shadow-lg p-6">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2 text-lg font-semibold">
+                  <Package className="h-5 w-5" />
+                  Build & Deploy Container
+                </div>
+                {!deploying && (
+                  <button onClick={closeDeployDialog} className="text-muted-foreground hover:text-foreground rounded-sm opacity-70 hover:opacity-100 transition-opacity">
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground mb-4">
+                Choose how you want to deploy your container image.
+              </p>
+
+              <div className="space-y-4 relative">
+                <div className="space-y-2">
+                  <Label>Deployment Option</Label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button
+                      variant={deployAction === 'download' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setDeployAction('download')}
+                      className="flex flex-col items-center gap-1 h-auto py-3"
+                    >
+                      <Download className="h-5 w-5" />
+                      <span className="text-xs">Save .tar</span>
+                    </Button>
+                    <Button
+                      variant={deployAction === 'dockerhub' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setDeployAction('dockerhub')}
+                      className="flex flex-col items-center gap-1 h-auto py-3"
+                    >
+                      <Upload className="h-5 w-5" />
+                      <span className="text-xs">Docker Hub</span>
+                    </Button>
+                    <Button
+                      variant={deployAction === 'cloud' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setDeployAction('cloud')}
+                      className="flex flex-col items-center gap-1 h-auto py-3"
+                    >
+                      <Cloud className="h-5 w-5" />
+                      <span className="text-xs">Cloud</span>
+                    </Button>
+                  </div>
+                </div>
+
+                {deployAction === 'dockerhub' && (
+                  <div className="space-y-3 p-3 rounded-lg bg-muted/50">
+                    <div className="space-y-1">
+                      <Label htmlFor="dh-user" className="text-xs">Docker Hub Username</Label>
+                      <Input
+                        id="dh-user"
+                        value={dockerHubUsername}
+                        onChange={(e) => setDockerHubUsername(e.target.value)}
+                        placeholder="your-username"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="dh-pass" className="text-xs">Docker Hub Password</Label>
+                      <Input
+                        id="dh-pass"
+                        type="password"
+                        value={dockerHubPassword}
+                        onChange={(e) => setDockerHubPassword(e.target.value)}
+                        placeholder="••••••••"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {deployAction === 'cloud' && (
+                  <div className="space-y-3 p-3 rounded-lg bg-muted/50">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Cloud Provider</Label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {['aws', 'gcp', 'azure', 'kubernetes'].map((provider) => (
+                          <Button
+                            key={provider}
+                            variant={cloudProvider === provider ? 'default' : 'outline'}
+                            size="sm"
+                            onClick={() => setCloudProvider(provider)}
+                            className="capitalize"
+                          >
+                            {provider}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {deployAction === 'download' && (
+                  <div className="flex items-center gap-2 p-3 rounded-lg bg-muted/50">
+                    <input
+                      type="checkbox"
+                      id="autoImport"
+                      checked={autoImport}
+                      onChange={(e) => setAutoImport(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <Label htmlFor="autoImport" className="text-sm cursor-pointer">
+                      Auto-import to Docker Desktop
+                    </Label>
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={closeDeployDialog} disabled={deploying}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleDeploy} disabled={deploying}>
+                    {deploying ? 'Building...' : deployAction === 'download' ? 'Build & Download' : 'Build & Deploy'}
+                  </Button>
+                </div>
+
+                {deploying && (
+                  <div className="absolute inset-0 bg-background/80 flex items-center justify-center z-50 rounded-lg">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+                      <p className="text-sm text-muted-foreground">Building container image...</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
