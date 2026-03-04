@@ -41,6 +41,12 @@ export function IdeHeader() {
   const [autoImport, setAutoImport] = useState(false);
   const [dockerHubUsername, setDockerHubUsername] = useState('');
   const [dockerHubPassword, setDockerHubPassword] = useState('');
+  const [dockerHubRepos, setDockerHubRepos] = useState<string[]>([]);
+  const [selectedDockerHubRepo, setSelectedDockerHubRepo] = useState('');
+  const [dockerHubCustomRepo, setDockerHubCustomRepo] = useState('');
+  const [dockerHubActualUsername, setDockerHubActualUsername] = useState('');
+  const [isLoadingDockerHubRepos, setIsLoadingDockerHubRepos] = useState(false);
+  const [dockerHubReposError, setDockerHubReposError] = useState('');
   const [cloudProvider, setCloudProvider] = useState('aws');
   const [deploying, setDeploying] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -55,6 +61,33 @@ export function IdeHeader() {
   useEffect(() => {
     return () => resetBodyPointerEvents();
   }, []);
+
+  const fetchDockerHubRepos = useCallback(async () => {
+    if (!dockerHubUsername || !dockerHubPassword || deployAction !== 'dockerhub') return;
+    setIsLoadingDockerHubRepos(true);
+    setDockerHubReposError('');
+    setDockerHubRepos([]);
+    setSelectedDockerHubRepo('');
+    setDockerHubCustomRepo('');
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/dockerhub/repos?username=${encodeURIComponent(dockerHubUsername)}&password=${encodeURIComponent(dockerHubPassword)}`);
+      const data = await res.json();
+      console.log('[Docker Hub] Repos response:', data);
+      if (data.username) {
+        setDockerHubActualUsername(data.username);
+      }
+      if (data.repos && data.repos.length > 0) {
+        setDockerHubRepos(data.repos.map((r: { name: string }) => r.name));
+      } else if (data.error) {
+        setDockerHubReposError(data.error);
+      }
+    } catch (err) {
+      console.error('[Docker Hub] Fetch error:', err);
+      setDockerHubReposError('Failed to fetch repositories');
+    } finally {
+      setIsLoadingDockerHubRepos(false);
+    }
+  }, [dockerHubUsername, dockerHubPassword, deployAction]);
 
   const participantCount = session ? Object.keys(session.participants).length : 0;
 
@@ -151,8 +184,9 @@ export function IdeHeader() {
       };
 
       if (deployAction === 'dockerhub') {
-        buildBody.dockerHubUsername = dockerHubUsername;
+        buildBody.dockerHubUsername = dockerHubActualUsername || dockerHubUsername;
         buildBody.dockerHubPassword = dockerHubPassword;
+        buildBody.dockerHubRepo = dockerHubCustomRepo || selectedDockerHubRepo || session?.name || 'codeforge-project';
       } else if (deployAction === 'cloud') {
         buildBody.cloudProvider = cloudProvider;
       }
@@ -185,16 +219,20 @@ export function IdeHeader() {
       if (!buildResponse.ok) {
         const errorData = await buildResponse.json().catch(() => ({}));
         const fullMessage = errorData.details || errorData.error || 'Build failed';
+        const buildLog = errorData.buildLog || '';
         const shortMessage = fullMessage.length > 200 ? fullMessage.substring(0, 200) + '...' : fullMessage;
-        throw new Error(shortMessage);
+        if (buildLog) {
+          addOutput('error', `❌ ${shortMessage}\n${buildLog.substring(0, 500)}`);
+        } else {
+          throw new Error(shortMessage);
+        }
+        return;
       }
 
       if (deployAction === 'download' && autoImport) {
         const result = await buildResponse.json();
-        addOutput('success', `✅ Container image built and imported to Docker!`);
-        if (result.output) {
-          addOutput('info', `📋 ${result.output}`);
-        }
+        const imgName = result.imageName ? result.imageName.split(':')[0] : 'codeforge/project';
+        addOutput('success', `✅ Built: ${imgName}`);
       } else if (deployAction === 'download') {
         const result = await buildResponse.json();
 
@@ -212,12 +250,12 @@ export function IdeHeader() {
         const blobUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = blobUrl;
+        const imgName = result.imageName ? result.imageName.split(':')[0] : 'codeforge-project';
         a.download = result.fileName || `${session?.name || 'codeforge'}-container.tar`;
         a.click();
         setTimeout(() => window.URL.revokeObjectURL(blobUrl), 1000);
 
-        addOutput('success', '✅ Container image built! Downloading...');
-        addOutput('info', '💡 To import: docker load -i filename.tar');
+        addOutput('success', `✅ Built: ${imgName}`);
       } else if (deployAction === 'dockerhub') {
         const result = await buildResponse.json();
         addOutput('success', `✅ ${result.message}`);
@@ -375,8 +413,8 @@ export function IdeHeader() {
                       <Package className="h-4 w-4 text-primary" />
                       <span className="font-semibold">Build Container Image</span>
                     </div>
-                    <span className="text-xs text-muted-foreground ml-6">Packages: Code + Dependencies</span>
-                    <span className="text-xs text-muted-foreground ml-6">Result: Ready-to-deploy Docker image</span>
+                    <span className="text-xs text-muted-foreground ml-6">Auto-detects language & framework</span>
+                    <span className="text-xs text-muted-foreground ml-6">Result: Ready-to-run Docker image</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleExportSourceCode} className="flex flex-col items-start gap-1 p-3">
@@ -557,7 +595,8 @@ export function IdeHeader() {
                         id="dh-user"
                         value={dockerHubUsername}
                         onChange={(e) => setDockerHubUsername(e.target.value)}
-                        placeholder="your-username"
+                        placeholder="your-username (not email)"
+                        title="Enter your Docker Hub username, not email. Find it at https://hub.docker.com/settings/general"
                       />
                     </div>
                     <div className="space-y-1">
@@ -570,6 +609,70 @@ export function IdeHeader() {
                         placeholder="••••••••"
                       />
                     </div>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={fetchDockerHubRepos}
+                      disabled={!dockerHubUsername || !dockerHubPassword || isLoadingDockerHubRepos}
+                      className="w-full"
+                    >
+                      {isLoadingDockerHubRepos ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin mr-2" />
+                          Fetching repositories...
+                        </>
+                      ) : (
+                        'Fetch Repositories'
+                      )}
+                    </Button>
+
+                    {!isLoadingDockerHubRepos && dockerHubUsername && dockerHubPassword && dockerHubRepos.length > 0 && (
+                      <div className="space-y-1">
+                        <Label htmlFor="dh-repo" className="text-xs">Select Repository</Label>
+                        <select
+                          id="dh-repo"
+                          className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
+                          value={selectedDockerHubRepo}
+                          onChange={(e) => {
+                            if (e.target.value === '__custom__') {
+                              setSelectedDockerHubRepo('');
+                              setDockerHubCustomRepo(session?.name || '');
+                            } else {
+                              setSelectedDockerHubRepo(e.target.value);
+                              setDockerHubCustomRepo('');
+                            }
+                          }}
+                        >
+                          <option value="">Select a repository...</option>
+                          {dockerHubRepos.map(repo => (
+                            <option key={repo} value={repo}>{repo}</option>
+                          ))}
+                          <option value="__custom__">+ Enter custom repository name</option>
+                        </select>
+                      </div>
+                    )}
+
+                    {(!isLoadingDockerHubRepos && (dockerHubReposError || dockerHubRepos.length === 0)) && (
+                      <div className="space-y-1">
+                        <Label htmlFor="dh-custom-repo" className="text-xs">
+                          {dockerHubReposError ? 'Enter repository name (fetch failed)' : 'Repository Name'}
+                        </Label>
+                        <Input
+                          id="dh-custom-repo"
+                          value={dockerHubCustomRepo}
+                          onChange={(e) => {
+                            setDockerHubCustomRepo(e.target.value);
+                            setSelectedDockerHubRepo('');
+                          }}
+                          placeholder={session?.name || 'my-repo'}
+                        />
+                        {dockerHubReposError && (
+                          <p className="text-xs text-destructive">{dockerHubReposError}</p>
+                        )}
+                      </div>
+                    )}
+
                   </div>
                 )}
 

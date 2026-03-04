@@ -857,6 +857,143 @@ app.get('/api/languages', (req, res) => {
   });
 });
 
+app.get('/api/dockerhub/repos', async (req, res) => {
+  let { username, password } = req.query;
+  
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required', repos: [] });
+  }
+
+  const https = require('https');
+
+  try {
+    const authData = JSON.stringify({ identifier: username, secret: password });
+    console.log(`[Docker Hub] Attempting auth with identifier: ${username}`);
+    
+    const authRes = await new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'hub.docker.com',
+        path: '/v2/auth/token',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(authData)
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve({ statusCode: res.statusCode, data }));
+      });
+      req.on('error', (err) => {
+        console.error('[Docker Hub] Network error during auth:', err.message);
+        resolve({ statusCode: 500, data: '' });
+      });
+      req.write(authData);
+      req.end();
+    });
+
+    console.log(`[Docker Hub] Auth response status: ${authRes.statusCode}, data: ${(authRes.data || '').substring(0, 500)}`);
+
+    if (authRes.statusCode !== 200) {
+      let errorMsg = 'Invalid username or password. You can use your Docker Hub password OR a Personal Access Token (PAT). Create a PAT at https://hub.docker.com/settings/security';
+      try {
+        const errData = JSON.parse(authRes.data || '{}');
+        errorMsg = errData.detail || errData.message || errorMsg;
+      } catch {}
+      console.log(`[Docker Hub] Auth failed: ${errorMsg}`);
+      return res.json({ error: errorMsg, repos: [] });
+    }
+
+    const authJson = JSON.parse(authRes.data || '{}');
+    console.log(`[Docker Hub] Auth JSON response:`, JSON.stringify(authJson));
+    
+    const token = authJson.token || authJson.access_token;
+    
+    if (!token) {
+      console.log(`[Docker Hub] No token in response. Full response:`, authRes.data);
+      return res.json({ error: 'Authentication failed - no token received. Try using a Personal Access Token (PAT) instead of password.', repos: [] });
+    }
+
+    console.log(`[Docker Hub] Got token, fetching user info...`);
+
+    // Get user info to find username
+    const userRes = await new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'hub.docker.com',
+        path: '/v2/user/',
+        method: 'GET',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve({ statusCode: res.statusCode, data }));
+      });
+      req.on('error', () => resolve({ statusCode: 500, data: '{}' }));
+      req.end();
+    });
+
+    let actualUsername = username;
+    if (userRes.statusCode === 200) {
+      const userJson = JSON.parse(userRes.data || '{}');
+      actualUsername = userJson.username;
+      console.log(`[Docker Hub] Got username: ${actualUsername}, user data: ${userRes.data}`);
+    } else {
+      console.log(`[Docker Hub] Could not get user info, status: ${userRes.statusCode}, response: ${userRes.data}`);
+    }
+
+    if (!actualUsername) {
+      return res.json({ error: 'Could not determine Docker Hub username', repos: [] });
+    }
+
+    const repos = [];
+    let page = 1;
+    const maxPages = 5;
+
+    while (page <= maxPages) {
+      const listRes = await new Promise((resolve) => {
+        const req = https.request({
+          hostname: 'hub.docker.com',
+          path: `/v2/namespaces/${actualUsername}/repositories?page=${page}&page_size=100`,
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${token}` }
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => resolve({ statusCode: res.statusCode, data }));
+        });
+        req.on('error', () => resolve({ statusCode: 500, data: '[]' }));
+        req.end();
+      });
+
+      if (listRes.statusCode !== 200) break;
+      
+      const listJson = JSON.parse(listRes.data || '{}');
+      if (listJson.results && listJson.results.length > 0) {
+        listJson.results.forEach(repo => {
+          repos.push({
+            name: repo.name,
+            description: repo.description || '',
+            isPrivate: repo.is_private,
+            pulls: repo.pull_count
+          });
+        });
+        if (!listJson.next) break;
+        page++;
+      } else {
+        break;
+      }
+    }
+
+    res.json({ repos, error: null, username: actualUsername });
+  } catch (e) {
+    console.error('[Docker Hub] Error fetching repos:', e.message);
+    res.json({ error: 'Failed to fetch repositories: ' + e.message, repos: [] });
+  }
+});
+
 app.get('/api/check-docker', (req, res) => {
   const dockerCommands = [
     'docker',
@@ -886,7 +1023,7 @@ app.get('/api/check-docker', (req, res) => {
 });
 
 app.post('/api/build-container', async (req, res) => {
-  const { files, sessionName, action, dockerHubUsername, dockerHubPassword, cloudProvider, cloudConfig } = req.body;
+  const { files, sessionName, action, dockerHubUsername, dockerHubPassword, dockerHubRepo, cloudProvider, cloudConfig } = req.body;
 
   if (!files || typeof files !== 'object') {
     return res.status(400).json({ error: 'Invalid files data' });
@@ -894,8 +1031,11 @@ app.post('/api/build-container', async (req, res) => {
 
   const dockerCmd = process.platform === 'win32' ? 'docker.exe' : 'docker';
   const sanitizedName = (sessionName || 'project').toLowerCase().replace(/[^a-z0-9]/g, '-');
-  const imageName = `codeforge/${sanitizedName}-${Date.now()}`;
-  const buildDir = path.join(os.tmpdir(), `codeforge-build-${Date.now()}`);
+  const hubRepoName = dockerHubRepo || sanitizedName;
+  const timestamp = Date.now();
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  const imageName = `codeforge/${sanitizedName}:${timestamp}-${randomSuffix}`;
+  const buildDir = path.join(os.tmpdir(), `codeforge-build-${timestamp}`);
 
   const isAutoImport = action === 'autoimport';
 
@@ -925,47 +1065,275 @@ app.post('/api/build-container', async (req, res) => {
       fs.writeFileSync(filePath, content || '');
     }
 
+    // ============================================================
+    // DOCKERFILE GENERATION - Dynamic based on file types
+    // ============================================================
+    
+    const fileKeys = Object.keys(files);
+    console.log(`[Docker Build] =============================================`);
+    console.log(`[Docker Build] FILES RECEIVED: ${fileKeys.join(', ')}`);
+    console.log(`[Docker Build] =============================================`);
+    
     let dockerfileContent = '';
-    const packageJson = files['package.json'];
-    const requirementsTxt = files['requirements.txt'];
-    const pyprojectToml = files['pyproject.toml'];
-    const indexJs = files['index.js'];
-    const mainCsproj = Object.keys(files).find(f => f.endsWith('.csproj'));
+    let detectedPort = 3000;
+    let framework = 'unknown';
+    let entryFile = 'index.js';
+    
+    // Check for Python files
+    const pythonFiles = fileKeys.filter(f => f.endsWith('.py'));
+    const hasPython = pythonFiles.length > 0;
+    
+    // Check for Node.js files  
+    const jsFiles = fileKeys.filter(f => f.endsWith('.js') || f.endsWith('.ts'));
+    const hasJs = jsFiles.length > 0;
+    
+    // Check for package.json and requirements.txt
+    const hasPackageJson = fileKeys.includes('package.json');
+    let hasRequirements = fileKeys.includes('requirements.txt');
+    const hasTemplates = fileKeys.some(f => f.startsWith('templates/'));
+    
+    // Get main Python file
+    const mainPyFile = pythonFiles.find(f => f.includes('main')) || pythonFiles[0] || 'app.py';
+    const mainJsFile = jsFiles.find(f => f.includes('main')) || jsFiles[0] || 'index.js';
+    
+    // Auto-generate requirements.txt by scanning ALL Python files for imports
+    if (pythonFiles.length > 0 && !hasRequirements) {
+      console.log(`[Docker Build] Auto-detecting Python dependencies...`);
+      const allPythonContent = Object.entries(files)
+        .filter(([name]) => name.endsWith('.py'))
+        .map(([, content]) => content)
+        .join(' ');
 
-    if (packageJson) {
-      const pkg = JSON.parse(packageJson);
-      if (pkg.type === 'module') {
-        dockerfileContent = `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --only=production\nCOPY . .\nEXPOSE 3000\nCMD ["node", "index.js"]`;
-      } else {
-        dockerfileContent = `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --only=production\nCOPY . .\nEXPOSE 3000\nCMD ["node", "index.js"]`;
+      const detectedDeps = new Set();
+
+      // Common frameworks - detect from imports
+      if (allPythonContent.includes('from flask import') || allPythonContent.includes('Flask(')) {
+        detectedDeps.add('Flask==2.3.2');
+        console.log(`[Docker Build] Found: Flask`);
       }
-    } else if (requirementsTxt || pyprojectToml) {
-      dockerfileContent = `FROM python:3.11-slim\nWORKDIR /app\nCOPY requirements.txt ./\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY . .\nCMD ["python", "main.py"]`;
-    } else if (mainCsproj) {
-      dockerfileContent = `FROM mcr.microsoft.com/dotnet/sdk:8.0\nWORKDIR /app\nCOPY *.csproj ./\nRUN dotnet restore\nCOPY . .\nRUN dotnet publish -c Release -o /app/publish\nEXPOSE 8080\nCMD ["dotnet", "publish.dll"]`;
-    } else if (indexJs) {
-      dockerfileContent = `FROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --only=production\nCOPY . .\nEXPOSE 3000\nCMD ["node", "index.js"]`;
-    } else {
-      dockerfileContent = `FROM alpine:latest\nWORKDIR /app\nCOPY . .\nCMD ["sh"]`;
+      if (allPythonContent.includes('from fastapi import') || allPythonContent.includes('FastAPI(')) {
+        detectedDeps.add('fastapi==0.104.1');
+        detectedDeps.add('uvicorn==0.24.0');
+        console.log(`[Docker Build] Found: FastAPI`);
+      }
+      if (allPythonContent.includes('from django import')) {
+        detectedDeps.add('django==4.2.7');
+        console.log(`[Docker Build] Found: Django`);
+      }
+      if (allPythonContent.includes('import requests') || allPythonContent.includes('from requests')) {
+        detectedDeps.add('requests');
+        console.log(`[Docker Build] Found: requests`);
+      }
+      if (allPythonContent.includes('import numpy')) {
+        detectedDeps.add('numpy');
+        console.log(`[Docker Build] Found: numpy`);
+      }
+      if (allPythonContent.includes('import pandas')) {
+        detectedDeps.add('pandas');
+        console.log(`[Docker Build] Found: pandas`);
+      }
+      if (allPythonContent.includes('import cv2') || allPythonContent.includes('from cv2')) {
+        detectedDeps.add('opencv-python');
+        console.log(`[Docker Build] Found: opencv`);
+      }
+      if (allPythonContent.includes('import sklearn')) {
+        detectedDeps.add('scikit-learn');
+        console.log(`[Docker Build] Found: scikit-learn`);
+      }
+
+      if (detectedDeps.size > 0) {
+        const requirementsContent = Array.from(detectedDeps).join('\n');
+        fs.writeFileSync(path.join(buildDir, 'requirements.txt'), requirementsContent);
+        hasRequirements = true;
+        console.log(`[Docker Build] Auto-generated requirements.txt: ${requirementsContent}`);
+      } else {
+        console.log(`[Docker Build] No Python dependencies detected`);
+      }
     }
-
-    console.log(`[Docker Build] Dockerfile content:\n${dockerfileContent}`);
-
+    
+    // Determine framework and generate Dockerfile
+    if (hasPackageJson) {
+      // Node.js project
+      console.log(`[Docker Build] DETECTED: Node.js (has package.json)`);
+      framework = 'node';
+      try {
+        const pkg = JSON.parse(files['package.json']);
+        entryFile = pkg.main || 'index.js';
+        detectedPort = pkg.port || 3000;
+      } catch(e) {
+        entryFile = 'index.js';
+        detectedPort = 3000;
+      }
+      console.log(`[Docker Build] ENTRY: ${entryFile} | PORT: ${detectedPort}`);
+      
+      dockerfileContent = `FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE ${detectedPort}
+CMD ["node", "${entryFile}"]`;
+      
+    } else if (hasRequirements || hasPython) {
+      // Python project - check which type
+      const reqContent = (files['requirements.txt'] || '').toLowerCase();
+      
+      if (reqContent.includes('flask') || hasTemplates) {
+        // Flask
+        console.log(`[Docker Build] DETECTED: Flask`);
+        framework = 'flask';
+        entryFile = pythonFiles.includes('app.py') ? 'app.py' : mainPyFile;
+        detectedPort = 5000;
+        console.log(`[Docker Build] ENTRY: ${entryFile} | PORT: ${detectedPort}`);
+        
+        let dockerfileBody = '';
+        if (hasRequirements) {
+          dockerfileBody = `COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+`;
+        }
+        dockerfileContent = `FROM python:3.11-slim
+WORKDIR /app
+${dockerfileBody}COPY . .
+EXPOSE ${detectedPort}
+CMD ["python", "-u", "${entryFile}"]`;
+        
+      } else if (reqContent.includes('fastapi') || reqContent.includes('uvicorn')) {
+        // FastAPI
+        console.log(`[Docker Build] DETECTED: FastAPI`);
+        framework = 'fastapi';
+        entryFile = mainPyFile;
+        detectedPort = 8000;
+        console.log(`[Docker Build] ENTRY: ${entryFile} | PORT: ${detectedPort}`);
+        
+        const fastApiEntry = entryFile.replace('.py', '') + ':app';
+        let dockerfileBody = '';
+        if (hasRequirements) {
+          dockerfileBody = `COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+`;
+        }
+        dockerfileContent = `FROM python:3.11-slim
+WORKDIR /app
+${dockerfileBody}COPY . .
+EXPOSE ${detectedPort}
+CMD ["uvicorn", "${fastApiEntry}", "--host", "0.0.0.0", "--port", "${detectedPort}"]`;
+        
+      } else if (hasPython) {
+        // Generic Python
+        console.log(`[Docker Build] DETECTED: Python`);
+        framework = 'python';
+        entryFile = mainPyFile;
+        detectedPort = 8000;
+        console.log(`[Docker Build] ENTRY: ${entryFile} | PORT: ${detectedPort}`);
+        
+        let dockerfileBody = '';
+        if (hasRequirements) {
+          dockerfileBody = `COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+`;
+        }
+        dockerfileContent = `FROM python:3.11-slim
+WORKDIR /app
+${dockerfileBody}COPY . .
+EXPOSE ${detectedPort}
+CMD ["python", "-u", "${entryFile}"]`;
+      } else {
+        // Fallback - has requirements.txt but no Python files
+        console.log(`[Docker Build] DETECTED: Python (from requirements.txt)`);
+        framework = 'python';
+        entryFile = 'main.py';
+        detectedPort = 8000;
+        
+        dockerfileContent = `FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE ${detectedPort}
+CMD ["python", "-u", "${entryFile}"]`;
+      }
+      
+    } else if (hasJs) {
+      // Node.js without package.json - create one
+      console.log(`[Docker Build] DETECTED: Node.js (plain JS)`);
+      framework = 'node';
+      entryFile = mainJsFile;
+      detectedPort = 3000;
+      console.log(`[Docker Build] ENTRY: ${entryFile} | PORT: ${detectedPort}`);
+      
+      dockerfileContent = `FROM node:20-alpine
+WORKDIR /app
+COPY ${entryFile} .
+EXPOSE ${detectedPort}
+CMD ["node", "${entryFile}"]`;
+      
+    } else if (pythonFiles.length > 0) {
+      // Python without requirements.txt
+      console.log(`[Docker Build] DETECTED: Python (no requirements.txt)`);
+      framework = 'python';
+      entryFile = mainPyFile;
+      detectedPort = 8000;
+      console.log(`[Docker Build] ENTRY: ${entryFile} | PORT: ${detectedPort}`);
+      
+      dockerfileContent = `FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+EXPOSE ${detectedPort}
+CMD ["python", "-u", "${entryFile}"]`;
+      
+    } else {
+      // Generic fallback
+      console.log(`[Docker Build] DETECTED: Unknown (generic)`);
+      framework = 'generic';
+      detectedPort = 3000;
+      
+      dockerfileContent = `FROM alpine:latest
+WORKDIR /app
+COPY . .
+CMD ["tail", "-f", "/dev/null"]`;
+    }
+    
+    console.log(`[Docker Build] =============================================`);
+    console.log(`[Docker Build] FRAMEWORK: ${framework}`);
+    console.log(`[Docker Build] ENTRY FILE: ${entryFile}`);
+    console.log(`[Docker Build] PORT: ${detectedPort}`);
+    console.log(`[Docker Build] =============================================`);
+    console.log(`[Docker Build] DOCKERFILE:\n${dockerfileContent}`);
+    console.log(`[Docker Build] =============================================`);
+    
     fs.writeFileSync(path.join(buildDir, 'Dockerfile'), dockerfileContent);
-    console.log(`[Docker Build] Dockerfile written to ${path.join(buildDir, 'Dockerfile')}`);
     console.log(`[Docker Build] Running docker build...`);
+    console.log(`[Docker Build] Image name: ${imageName}`);
 
+    let buildOutput = '';
     try {
       await new Promise((resolve, reject) => {
-        exec(`${dockerCmd} build -t ${imageName} "${buildDir}" --progress=plain`, {
+        const buildProcess = exec(`${dockerCmd} build -t ${imageName} "${buildDir}" --progress=plain`, {
           encoding: 'utf8',
           shell: true,
-          maxBuffer: 50 * 1024 * 1024
-        }, (error, stdout, stderr) => {
-          if (error) {
-            console.log(`[Docker Build] Build failed: ${error.message}`);
-            console.log(`[Docker Build] Output: ${stdout}\n${stderr}`);
-            reject(new Error(error.message + '\n' + stdout + '\n' + stderr));
+          maxBuffer: 100 * 1024 * 1024
+        });
+        
+        buildProcess.stdout.on('data', (data) => {
+          buildOutput += data;
+          console.log(`[Docker Build] ${data.trim()}`);
+        });
+        
+        buildProcess.stderr.on('data', (data) => {
+          buildOutput += data;
+          console.log(`[Docker Build] ERR: ${data.trim()}`);
+        });
+        
+        buildProcess.on('error', (error) => {
+          console.log(`[Docker Build] Process error: ${error.message}`);
+          reject(error);
+        });
+        
+        buildProcess.on('close', (code) => {
+          if (code !== 0) {
+            console.log(`[Docker Build] Build exited with code ${code}`);
+            reject(new Error(`Docker build failed with exit code ${code}`));
           } else {
             console.log(`[Docker Build] Build succeeded`);
             resolve();
@@ -973,8 +1341,14 @@ app.post('/api/build-container', async (req, res) => {
         });
       });
     } catch (err) {
+      console.log(`[Docker Build] ❌ ERROR: ${err.message}`);
+      console.log(`[Docker Build] Full output:\n${buildOutput}`);
       fs.rmSync(buildDir, { recursive: true, force: true });
-      return res.status(500).json({ error: 'Docker build failed', details: err.message });
+      return res.status(500).json({ 
+        error: 'Docker build failed: ' + err.message, 
+        details: buildOutput || err.message,
+        buildLog: buildOutput 
+      });
     }
 
     // Auto-import is satisfied by 'docker build' itself (local engine)
@@ -982,10 +1356,113 @@ app.post('/api/build-container', async (req, res) => {
       fs.rmSync(buildDir, { recursive: true, force: true });
       return res.json({ 
         success: true, 
-        message: 'Container image built successfully and is available in Docker Desktop!', 
-        imageName: imageName 
+        message: 'Container image built and imported to Docker Desktop!', 
+        imageName: imageName,
+        port: detectedPort,
+        accessUrl: `http://localhost:${detectedPort}`
       });
     }
+
+// =============================================================================
+// Docker Hub Helper Functions
+// =============================================================================
+
+async function checkDockerHubRepository(username, password, repoName) {
+  const https = require('https');
+  
+  return new Promise((resolve) => {
+    const authData = JSON.stringify({ identifier: username, secret: password });
+    const authReq = https.request({
+      hostname: 'hub.docker.com',
+      path: '/v2/auth/token',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(authData)
+      }
+    }, (authRes) => {
+      let authBody = '';
+      authRes.on('data', chunk => authBody += chunk);
+      authRes.on('end', () => {
+        try {
+          const authJson = JSON.parse(authBody);
+          const token = authJson.token || authJson.access_token;
+          if (token) {
+            const repoReq = https.request({
+              hostname: 'hub.docker.com',
+              path: `/v2/repositories/${username}/${repoName}/`,
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            }, (repoRes) => {
+              let repoBody = '';
+              repoRes.on('data', chunk => repoBody += chunk);
+              repoRes.on('end', () => {
+                if (repoRes.statusCode === 200) {
+                  resolve({ exists: true, message: 'Repository exists' });
+                } else if (repoRes.statusCode === 404) {
+                  resolve({ exists: false, message: 'Repository not found', token });
+                } else {
+                  resolve({ exists: null, message: `Unexpected response: ${repoRes.statusCode}`, token });
+                }
+              });
+            });
+            repoReq.on('error', () => resolve({ exists: null, message: 'Network error checking repository', token }));
+            repoReq.end();
+          } else {
+            resolve({ exists: null, message: authJson.detail || 'Authentication failed' });
+          }
+        } catch (e) {
+          resolve({ exists: null, message: 'Failed to parse auth response' });
+        }
+      });
+    });
+    authReq.on('error', () => resolve({ exists: null, message: 'Network error during authentication' }));
+    authReq.write(authData);
+    authReq.end();
+  });
+}
+
+async function createDockerHubRepository(username, password, repoName, token) {
+  const https = require('https');
+  
+  return new Promise((resolve) => {
+    const createData = JSON.stringify({ name: repoName, namespace: username });
+    const createReq = https.request({
+      hostname: 'hub.docker.com',
+      path: `/v2/repositories/${username}/`,
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(createData)
+      }
+    }, (createRes) => {
+      let createBody = '';
+      createRes.on('data', chunk => createBody += chunk);
+      createRes.on('end', () => {
+        if (createRes.statusCode === 201 || createRes.statusCode === 200) {
+          resolve({ created: true, message: 'Repository created successfully' });
+        } else {
+          try {
+            const errJson = JSON.parse(createBody);
+            resolve({ created: false, message: errJson.detail || `Failed to create repository (${createRes.statusCode})` });
+          } catch {
+            resolve({ created: false, message: `Failed to create repository (${createRes.statusCode})` });
+          }
+        }
+      });
+    });
+    createReq.on('error', () => resolve({ created: false, message: 'Network error creating repository' }));
+    createReq.write(createData);
+    createReq.end();
+  });
+}
+
+// =============================================================================
+// Build Container Image Endpoint
+// =============================================================================
 
     if (action === 'dockerhub') {
       if (!dockerHubUsername || !dockerHubPassword) {
@@ -994,7 +1471,26 @@ app.post('/api/build-container', async (req, res) => {
         return res.status(400).json({ error: 'Docker Hub credentials required' });
       }
 
-      const hubImageName = `${dockerHubUsername}/${sanitizedName}:latest`;
+      const hubImageName = `${dockerHubUsername}/${hubRepoName}:latest`;
+
+      // Check/create repository before pushing
+      console.log(`[Docker Hub] Checking repository ${dockerHubUsername}/${hubRepoName}...`);
+      const repoCheck = await checkDockerHubRepository(dockerHubUsername, dockerHubPassword, hubRepoName);
+      
+      if (repoCheck.exists === null) {
+        console.log(`[Docker Hub] Repo check failed: ${repoCheck.message}, proceeding anyway...`);
+      } else if (repoCheck.exists === false) {
+        console.log(`[Docker Hub] Repository does not exist, attempting to create...`);
+        const repoCreate = await createDockerHubRepository(dockerHubUsername, dockerHubPassword, hubRepoName, repoCheck.token);
+        if (!repoCreate.created) {
+          console.log(`[Docker Hub] Create failed: ${repoCreate.message}`);
+          // Continue anyway - push might still work if it's a valid namespace
+        } else {
+          console.log(`[Docker Hub] Repository created successfully`);
+        }
+      } else {
+        console.log(`[Docker Hub] Repository exists`);
+      }
 
       exec(`${dockerCmd} tag ${imageName} ${hubImageName}`, (err) => {
         if (err) {
@@ -1082,7 +1578,7 @@ app.post('/api/build-container', async (req, res) => {
         return;
       }
 
-      const tarFileName = `${imageName.replace('/', '-')}-${Date.now()}.tar`;
+      const tarFileName = `${sanitizedName}-${timestamp}.tar`;
       const tempDir = path.join(os.tmpdir(), 'codeforge-downloads');
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
@@ -1094,10 +1590,15 @@ app.post('/api/build-container', async (req, res) => {
       fs.unlinkSync(tarPath);
       fs.rmSync(buildDir, { recursive: true, force: true });
 
+      const shortImageName = `codeforge/${sanitizedName}:${timestamp}`;
       res.json({
         success: true,
         downloadUrl: `/api/download-temp/${tarFileName}`,
-        fileName: tarFileName
+        fileName: tarFileName,
+        imageName: shortImageName,
+        port: detectedPort,
+        accessUrl: `http://localhost:${detectedPort}`,
+        instructions: `To run: docker run -p ${detectedPort}:${detectedPort} ${shortImageName}`
       });
     });
   } catch (error) {
