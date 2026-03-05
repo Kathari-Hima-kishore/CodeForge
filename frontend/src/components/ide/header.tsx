@@ -70,7 +70,7 @@ export function IdeHeader() {
     setSelectedDockerHubRepo('');
     setDockerHubCustomRepo('');
     try {
-      const res = await fetch(`${BACKEND_URL}/api/dockerhub/repos?username=${encodeURIComponent(dockerHubUsername)}&password=${encodeURIComponent(dockerHubPassword)}`);
+      const res = await fetch(`${BACKEND_URL}/api/dockerhub/repos?identifier=${encodeURIComponent(dockerHubUsername)}&password=${encodeURIComponent(dockerHubPassword)}`);
       const data = await res.json();
       console.log('[Docker Hub] Repos response:', data);
       if (data.username) {
@@ -590,7 +590,7 @@ export function IdeHeader() {
                 {deployAction === 'dockerhub' && (
                   <div className="space-y-3 p-3 rounded-lg bg-muted/50">
                     <div className="space-y-1">
-                      <Label htmlFor="dh-user" className="text-xs">Docker Hub Username</Label>
+                      <Label htmlFor="dh-user" className="text-xs">Docker Hub Username or Email</Label>
                       <Input
                         id="dh-user"
                         value={dockerHubUsername}

@@ -858,17 +858,52 @@ app.get('/api/languages', (req, res) => {
 });
 
 app.get('/api/dockerhub/repos', async (req, res) => {
-  let { username, password } = req.query;
+  let { identifier, password } = req.query;
   
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password required', repos: [] });
+  if (!identifier || !password) {
+    return res.status(400).json({ error: 'Username/Email and password required', repos: [] });
   }
 
   const https = require('https');
 
+  // Check if input looks like email
+  const isEmail = String(identifier).includes('@');
+  let resolvedIdentifier = identifier;
+
+  // If email, try to resolve to username first
+  if (isEmail) {
+    console.log(`[Docker Hub] Input appears to be email, trying to resolve username...`);
+    try {
+      const lookupRes = await new Promise((resolve) => {
+        const req = https.request({
+          hostname: 'hub.docker.com',
+          path: `/v2/users/${encodeURIComponent(identifier)}`,
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => resolve({ statusCode: res.statusCode, data }));
+        });
+        req.on('error', () => resolve({ statusCode: 500, data: '{}' }));
+        req.end();
+      });
+      
+      if (lookupRes.statusCode === 200) {
+        const userData = JSON.parse(lookupRes.data || '{}');
+        if (userData.username) {
+          resolvedIdentifier = userData.username;
+          console.log(`[Docker Hub] Resolved email to username: ${resolvedIdentifier}`);
+        }
+      }
+    } catch (e) {
+      console.log(`[Docker Hub] Could not resolve email to username: ${e.message}`);
+    }
+  }
+
   try {
-    const authData = JSON.stringify({ identifier: username, secret: password });
-    console.log(`[Docker Hub] Attempting auth with identifier: ${username}`);
+    const authData = JSON.stringify({ identifier: resolvedIdentifier, secret: password });
+    console.log(`[Docker Hub] Attempting auth with identifier: ${resolvedIdentifier}`);
     
     const authRes = await new Promise((resolve) => {
       const req = https.request({
@@ -935,7 +970,7 @@ app.get('/api/dockerhub/repos', async (req, res) => {
       req.end();
     });
 
-    let actualUsername = username;
+    let actualUsername = resolvedIdentifier;
     if (userRes.statusCode === 200) {
       const userJson = JSON.parse(userRes.data || '{}');
       actualUsername = userJson.username;
