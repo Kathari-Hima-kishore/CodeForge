@@ -429,6 +429,34 @@ class SessionData {
 }
 
 // =============================================================================
+// Firestore Persistence
+// =============================================================================
+
+// Save session to Firestore
+async function saveSessionToFirestore(session) {
+  if (!db || !session) return;
+  
+  try {
+    const sessionData = {
+      sessionId: session.id,
+      name: session.name,
+      hostId: session.host_uid,
+      hostName: session.participants[session.host_uid]?.name || "Host",
+      participants: session.participants,
+      files: Object.values(session.files),
+      messages: session.messages,
+      isActive: session.is_active,
+      createdAt: session.created_at
+    };
+    
+    await db.collection("sessions").doc(session.id).set(sessionData);
+    console.log(`💾 Session ${session.id} saved to Firestore`);
+  } catch (error) {
+    console.error(`❌ Failed to save session ${session.id} to Firestore:`, error);
+  }
+}
+
+// =============================================================================
 // Socket.IO Events
 // =============================================================================
 
@@ -471,7 +499,7 @@ io.on('connection', (socket) => {
     console.log(`🔌 Client disconnected: ${sid}`);
   });
 
-  socket.on('create_session', (data, callback) => {
+  socket.on('create_session', async (data, callback) => {
     const userData = connectedUsers[sid];
     if (!userData) return callback({ error: "Not authenticated" });
 
@@ -493,6 +521,10 @@ io.on('connection', (socket) => {
     sessions[sessionId] = session;
     userData.session_id = sessionId;
     socket.join(sessionId);
+
+    // Save session to Firestore
+    console.log(`Creating session ${sessionId} for user ${userData.uid}`);
+    await saveSessionToFirestore(session);
 
     // Bridge: Notify frontend of session creation
     notifyFrontend('session_created', { sessionId, hostId: userData.uid });
@@ -566,6 +598,9 @@ io.on('connection', (socket) => {
 
     userData.session_id = sessionId;
     socket.join(sessionId);
+
+    // Save session to Firestore (with new participant)
+    await saveSessionToFirestore(session);
 
     socket.to(sessionId).emit("user_joined", {
       user_uid: userData.uid,
@@ -654,11 +689,22 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('file_update', (data) => {
+  socket.on('file_update', async (data) => {
     const userData = connectedUsers[sid];
     if (!userData || !userData.session_id) return;
 
     const sessionId = userData.session_id;
+    const session = sessions[sessionId];
+    if (session && data.files) {
+      // Update session files
+      session.files = {};
+      data.files.forEach(f => {
+        const fId = f.id || generateSessionId(12);
+        session.files[fId] = f;
+      });
+      // Save to Firestore
+      await saveSessionToFirestore(session);
+    }
     socket.to(sessionId).emit("file_update", data);
   });
 
@@ -733,7 +779,7 @@ io.on('connection', (socket) => {
       terminalProcess = null;
       socket.emit('terminal_output', { output: '\n[Process killed]', isError: false });
     }
-    if (terminalProjectDir) {
+      if (terminalProjectDir) {
       setTimeout(() => {
         try { fs.rmSync(terminalProjectDir, { recursive: true, force: true }); } catch { }
         terminalProjectDir = null;
@@ -741,7 +787,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Clean up terminal on disconnect
+  // =============================================================================
+  // Release all locks when user disconnects
   socket.on('disconnect', () => {
     if (terminalProcess) {
       try { killProcessTree(terminalProcess); } catch { }
@@ -766,6 +813,28 @@ app.get('/', (req, res) => {
     service: "CodeForge Backend (Node.js)",
     timestamp: new Date().toISOString()
   });
+});
+
+// Test Firestore connectivity
+app.get('/api/test-firestore', async (req, res) => {
+  if (!db) {
+    return res.json({ status: "error", message: "Firebase Admin SDK not initialized" });
+  }
+  
+  try {
+    // Try to read a non-existent document to test connectivity
+    const doc = await db.collection("sessions").doc("test-connection").get();
+    return res.json({ 
+      status: "ok", 
+      message: "Firestore is accessible",
+      exists: doc.exists 
+    });
+  } catch (error) {
+    return res.json({ 
+      status: "error", 
+      message: error.message 
+    });
+  }
 });
 
 app.post('/api/execute', verifyFirebaseToken, async (req, res) => {

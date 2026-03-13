@@ -10,7 +10,7 @@ import {
   sendPasswordResetEmail,
   updateProfile,
 } from 'firebase/auth';
-import { auth, BACKEND_URL, getDynamicBackendUrl } from '@/lib/firebase';
+import { auth, getDynamicBackendUrl } from '@/lib/firebase';
 
 interface AuthContextType {
   user: User | null;

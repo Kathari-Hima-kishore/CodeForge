@@ -47,12 +47,21 @@ let auth: Auth;
 let db: Firestore;
 
 if (getApps().length === 0) {
+  console.log("🔥 Initializing Firebase app");
+  console.log("   Project ID:", firebaseConfig.projectId);
+  console.log("   Auth Domain:", firebaseConfig.authDomain);
+  console.log("   API Key:", firebaseConfig.apiKey ? "***" : "MISSING");
+  
   app = initializeApp(firebaseConfig);
+  console.log("✅ Firebase app initialized");
 } else {
+  console.log("🔥 Firebase app already initialized");
   app = getApps()[0];
 }
 
 auth = getAuth(app);
 db = getFirestore(app);
+
+console.log("✅ Firebase services ready. Auth:", auth ? "yes" : "no", "DB:", db ? "yes" : "no");
 
 export { app, auth, db };

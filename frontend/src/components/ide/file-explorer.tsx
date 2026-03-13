@@ -31,7 +31,7 @@ const getLanguageIcon = (language: string) => {
 };
 
 export function FileExplorer({ isCollapsed = false, onCollapse }: { isCollapsed?: boolean; onCollapse?: (collapsed: boolean) => void }) {
-  const { files, currentFileId, setCurrentFileId, createFile, deleteFile, renameFile, createFolder, renameFolder, deleteFolder, session } = useSession();
+  const { files, currentFileId, setCurrentFileId, createFile, deleteFile, renameFile, createFolder, renameFolder, deleteFolder, session, user } = useSession();
   const [isCreating, setIsCreating] = useState(false);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [editingFileId, setEditingFileId] = useState<string | null>(null);
@@ -353,7 +353,7 @@ function FileTree({
                   : "hover:bg-muted text-muted-foreground hover:text-foreground"
               )}
               style={{ paddingLeft: `${depth * 12 + 8}px` }}
-              onClick={() => {
+            onClick={() => {
                 if (isFolder) {
                   onToggleFolder(item.id);
                 } else {

@@ -1,5 +1,13 @@
 # CodeForge - Agent Guidelines
 
+## Main Entry Point
+
+**`http://localhost:9002/ide`** - Now uses Monaco Editor layout with:
+- File Explorer (left, collapsible)
+- Chat/Participants Panel (middle, collapsible)
+- Monaco Code Editor (center)
+- Output/Terminal (bottom of editor)
+
 ## Build & Development Commands
 
 ### Root Commands
@@ -43,6 +51,23 @@ npm start            # Production start
 - **Consistency** - match existing code patterns
 
 ### Frontend (TypeScript/React/Next.js)
+
+#### Monaco Editor Layout
+- File Explorer: `src/app/ide/monaco-test/page.tsx`
+- Main entry: `src/app/ide/page.tsx` (uses Monaco layout)
+- Editor options: `vs-dark` theme, JetBrains Mono font, word wrap, line numbers
+
+#### Layout Structure
+```
+Header (session info, share, leave, account)
+├── File Explorer (left, collapsible, resizable)
+├── Chat/Participants (middle, collapsible, resizable)
+└── Editor Column (center, contains Monaco + Output)
+    ├── Toolbar (file info, run button)
+    ├── Monaco Editor (flex-1)
+    ├── Resize Handle (vertical)
+    └── Output/Terminal (bottom panel)
+```
 
 #### Imports Order (strict order)
 1. React imports (`react`)
@@ -152,6 +177,7 @@ io.on('connection', (socket) => {
 |----------|----------|
 | UI Components | `frontend/src/components/ui/` |
 | Feature Components | `frontend/src/components/ide/` |
+| Main IDE Entry | `frontend/src/app/ide/page.tsx` |
 | Context/State | `frontend/src/contexts/` |
 | Utilities | `frontend/src/lib/` |
 | Backend Routes | `backend/index.js` |
@@ -169,16 +195,29 @@ io.on('connection', (socket) => {
 
 ## Architecture Notes
 
-### Terminal System
-- Uses Socket.IO (`terminal_run`, `terminal_kill`, `terminal_output`, `terminal_exit`) for real-time streaming
-- **No timeout** — processes run until user explicitly kills them
-- Session files written to temp dir (`codeforge-terminal-*`) with full folder structure
-- File paths reconstructed via `parentId` chain using `getFilePath()` helper
+### Monaco Editor Integration
+- Uses `@monaco-editor/react` package
+- Theme: `vs-dark` with custom padding and font settings
+- Languages supported: JavaScript, TypeScript, Python, Java, C++, C, HTML, CSS
+- Line numbers and minimap enabled by default
+- Auto-formatting and bracket matching enabled
 
-### Code Execution (Run Button)
-- Sends `run_code` via Socket.IO with `projectFiles` (all session files)
-- Backend writes all files to temp dir alongside main code file (`main.py`, `Main.java`, etc.)
-- 30s timeout — not suitable for long-running servers (use Terminal instead)
+### Panel Resizing
+- File Explorer: Left side, horizontal resize handle
+- Chat/Participants: Middle side, horizontal resize handle
+- Output/Terminal: Bottom of editor, vertical resize handle
+- All panels have minimum/maximum width constraints
+
+### Session Management
+- Files stored in Firestore with real-time sync
+- Socket.IO for live collaboration
+- Role-based permissions (host, co-host, editor, viewer)
+
+### Editor Features
+- **File Explorer**: Collapsible sidebar with file list and delete functionality
+- **Chat Panel**: Real-time messaging with participant list
+- **Monaco Editor**: Full code editor with syntax highlighting
+- **Output/Terminal**: Shows execution results and terminal output
 
 ### Export/Build Feature
 - "Build Container Image" dialog uses modal (not custom portal-based Radix UI Dialog)
@@ -202,6 +241,14 @@ io.on('connection', (socket) => {
 - On Windows: `taskkill /F /T /PID` kills entire process tree
 - Defined at top of `backend/index.js`, used for all process termination
 
+### File Locking System
+- Uses Socket.IO events: `file_open`, `file_close`, `file_write_activity`, `file_lock_update`, `file_lock_released`
+- Lock stored in backend memory (`fileLocks` object), synced to all clients
+- Auto-expire: 5 minutes of no write activity (tracked via `lastWriteAt` timestamp)
+- Instant release: When user closes file or disconnects
+- First-come-first-served: If file is locked, other users see lock indicator and editor becomes read-only
+- Frontend functions in session-context: `openFileLock`, `closeFileLock`, `sendFileWriteActivity`, `isFileLockedByOther`, `getFileLockInfo`
+
 ---
 
 ## Debugging Tips
@@ -210,10 +257,38 @@ io.on('connection', (socket) => {
 - Check browser console for React warnings
 - Use React DevTools for component state inspection
 - Network tab for Socket.IO connection status
+- **Firestore Debug**: Check console for "Creating session in Firestore" logs
 
 ### Backend
 - Check terminal output for runtime errors
 - Socket.IO events visible in Network tab (filter by "socket.io")
+- **Firestore Debug**: Check for "💾 Session saved to Firestore" logs
+
+### Common Issues & Solutions
+
+#### Sessions Not Appearing in Firestore
+1. Check backend logs for `saveSessionToFirestore()` calls
+2. Verify Firebase Admin SDK is initialized: `✅ Firebase Admin SDK initialized`
+3. Check frontend console for session creation logs
+4. Verify security rules are deployed: `firebase deploy --only firestore:rules`
+
+#### Port Conflicts
+```bash
+# Kill all Node processes
+taskkill /F /IM node.exe
+
+# Verify ports are free
+netstat -ano | findstr ":500|:900"
+
+# Restart servers
+cd backend && npm run dev
+cd frontend && npm run dev:no-open
+```
+
+#### Backend Port Instability
+- Backend tries ports 5001, 5002, 5003... until find free port
+- Update `backend/index.js` CONFIG.port to use fixed port
+- Or ensure port 5001 is always free before starting
 
 ---
 

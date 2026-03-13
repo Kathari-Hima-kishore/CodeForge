@@ -111,7 +111,7 @@ export function SessionDialog() {
           <div className="flex justify-center">
             <div className="relative">
               <div className="absolute inset-0 bg-primary/20 blur-2xl rounded-full scale-150" />
-              <Logo className="h-16 w-16 relative" />
+               <Logo />
             </div>
           </div>
           <div className="space-y-2">

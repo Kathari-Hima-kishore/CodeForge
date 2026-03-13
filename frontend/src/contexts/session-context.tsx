@@ -15,10 +15,10 @@ import {
   Timestamp,
   query,
   where,
-  getDocs,
   orderBy
 } from 'firebase/firestore';
 import { useAuth } from './auth-context';
+import { User } from 'firebase/auth';
 
 // Types
 export type Role = 'host' | 'co-host' | 'editor' | 'viewer';
@@ -45,7 +45,7 @@ export interface FileItem {
 
 export interface ChatMessage {
   id: string;
-  odor: string;
+  userId: string;
   userName: string;
   userColor: string;
   content: string;
@@ -90,6 +90,9 @@ export interface SessionSummary {
 }
 
 interface SessionContextType {
+  // User
+  user: User | null;
+
   // Session state
   session: Session | null;
   isConnected: boolean;
@@ -183,7 +186,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [isExecuting, setIsExecuting] = useState(false);
   const [isTerminalRunning, setIsTerminalRunning] = useState(false);
 
-  // Fetch user's existing sessions using a direct query on the sessions collection
+  // Fetch user's existing sessions from Firestore
   useEffect(() => {
     if (!user) {
       setMySessions([]);
@@ -193,32 +196,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setIsLoadingSessions(true);
 
     // Query for sessions where user is the host
-    // Simplified to avoid complex indexes
     const hostQuery = query(
       collection(db, 'sessions'),
-      where('hostId', '==', user.uid)
-    );
-
-    // Query for sessions where user is a participant
-    const participantQuery = query(
-      collection(db, 'sessions'),
-      where(`participants.${user.uid}.uid`, '==', user.uid)
+      where('hostId', '==', user.uid),
+      where('isActive', '==', true)
     );
 
     const unsubscribeHost = onSnapshot(hostQuery, (snapshot) => {
       const hostSessions = snapshot.docs
         .map(doc => doc.data() as SessionData)
-        .filter(data => data.isActive) // Filter in memory
-        .map(data => {
-          return {
-            sessionId: data.sessionId,
-            name: data.name,
-            hostName: data.hostName,
-            participantCount: Object.keys(data.participants || {}).length,
-            createdAt: data.createdAt?.toMillis() || Date.now(),
-            isHost: true,
-          };
-        });
+        .map(data => ({
+          sessionId: data.sessionId,
+          name: data.name,
+          hostName: data.hostName,
+          participantCount: Object.keys(data.participants || {}).length,
+          createdAt: data.createdAt?.toMillis() || Date.now(),
+          isHost: true,
+        }));
 
       setMySessions(prev => {
         const otherSessions = prev.filter(s => !s.isHost);
@@ -231,28 +225,40 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setIsLoadingSessions(false);
     });
 
+    // Query for sessions where user is a participant (but not host)
+    const participantQuery = query(
+      collection(db, 'sessions'),
+      where('isActive', '==', true),
+      orderBy('createdAt', 'desc')
+    );
+
     const unsubscribeParticipant = onSnapshot(participantQuery, (snapshot) => {
-      const partSessions = snapshot.docs
-        .map(doc => doc.data() as SessionData)
-        .filter(data => data.isActive && data.hostId !== user.uid) // Filter in memory
-        .map(data => {
-          return {
-            sessionId: data.sessionId,
-            name: data.name,
-            hostName: data.hostName,
-            participantCount: Object.keys(data.participants || {}).length,
-            createdAt: data.createdAt?.toMillis() || Date.now(),
-            isHost: false,
-          };
-        });
+      const participantSessions = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as { id: string } & SessionData))
+        .filter(data => {
+          // Check if user is a participant (but not the host)
+          const isParticipant = data.participants && data.participants[user.uid];
+          const isNotHost = data.hostId !== user.uid;
+          return isParticipant && isNotHost;
+        })
+        .map(data => ({
+          sessionId: data.sessionId,
+          name: data.name,
+          hostName: data.hostName,
+          participantCount: Object.keys(data.participants || {}).length,
+          createdAt: data.createdAt?.toMillis() || Date.now(),
+          isHost: false,
+        }));
 
       setMySessions(prev => {
-        const myHostSessions = prev.filter(s => s.isHost);
-        const combined = [...myHostSessions, ...partSessions];
+        const hostSessions = prev.filter(s => s.isHost);
+        const combined = [...hostSessions, ...participantSessions];
         return combined.sort((a, b) => b.createdAt - a.createdAt);
       });
+      setIsLoadingSessions(false);
     }, (err) => {
       console.error("Error listening to participant sessions:", err);
+      setIsLoadingSessions(false);
     });
 
     return () => {
@@ -261,7 +267,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, [user]);
 
-  // Keep refreshMySessions for compatibility, though the useEffect handles it now
+  // Keep refreshMySessions for compatibility
   const refreshMySessions = useCallback(async () => {
     // The useEffect listener above handles real-time updates now
   }, []);
@@ -348,7 +354,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
     setFiles(prev => {
       const updated = [...prev, newFile];
-      // Sync to Firestore if in session
       if (session?.sessionId) {
         const sessionRef = doc(db, 'sessions', session.sessionId);
         updateDoc(sessionRef, { files: updated });
@@ -471,7 +476,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const myParticipant = session.participants[user.uid];
     const newMessage: ChatMessage = {
       id: generateId(16),
-      odor: user.uid,
+      userId: user.uid,
       userName: myParticipant?.name || user.displayName || 'Anonymous',
       userColor: myParticipant?.color || '#3b82f6',
       content,
@@ -500,11 +505,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user) return;
 
-    // Use dynamic URL that works for localhost, LAN, DevTunnels, ngrok
     const socketUrl = getDynamicBackendUrl();
     console.log('🔌 Connecting to backend:', socketUrl);
 
-    // Create socket connection
     const newSocket = io(socketUrl, {
       auth: {
         userId: user.uid,
@@ -536,7 +539,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     // Handle code execution results (from other users)
     newSocket.on('execution_result', (data) => {
-      // Backend returns: stdout, stderr, exit_code, execution_time, executed_by, or error
       const executor = data.executed_by ? `[${data.executed_by}] ` : '';
       if (data.error) {
         addOutput('error', `${executor}❌ Execution Error: ${data.error}`);
@@ -586,10 +588,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!socket || !session?.sessionId || !user) return;
 
-    // Simplified join object
     const joinData = {
-      session_id: session.sessionId, // Backend expects snake_case for some fields, verify? No, backend uses data.get('session_id')
-      sessionId: session.sessionId, // Sending both to be safe given inconsistency risks
+      session_id: session.sessionId,
+      sessionId: session.sessionId,
       userId: user.uid,
       userName: user.displayName || user.email?.split('@')[0] || 'User',
       userEmail: user.email
@@ -598,11 +599,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     socket.emit('join_session', joinData, (response: any) => {
       if (response?.error === 'Session not found') {
         console.log('Session not found on backend. Attempting resurrection...');
-        // Check if we are host based on Firestore data
         if (session.hostId === user.uid) {
           socket.emit('create_session', {
             settings: { name: session.name },
-            session_id: session.sessionId // Pass existing ID to resurrection
+            session_id: session.sessionId
           }, (createRes: any) => {
             if (createRes?.success) {
               addOutput('success', '🔄 Session restored on server.');
@@ -644,9 +644,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setIsExecuting(false);
           addOutput('error', '❌ Execution timed out (No response from backend)');
         }
-      }, 35000); // slightly longer than backend timeout (30s)
+      }, 35000);
 
-      // Collect all project files with full paths for multi-file support
       const getFilePath = (file: { name: string; parentId?: string | null }): string => {
         const parts: string[] = [file.name];
         let current = file;
@@ -746,6 +745,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       addOutput('success', `🎉 Session "${name}" created! Share code: ${sessionId}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create session';
+      console.error("Error creating session:", error);
       setConnectionError(message);
       addOutput('error', `❌ ${message}`);
     } finally {
@@ -783,7 +783,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         uid: user.uid,
         name: user.displayName || user.email?.split('@')[0] || 'User',
         email: user.email || '',
-        role: 'editor', // Default role for new joiners
+        role: 'editor',
         color: myColor,
         isOnline: true,
         ...(user.photoURL && { photoURL: user.photoURL }),
@@ -827,7 +827,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [user, addOutput]);
 
-  // Rejoin an existing session (for sessions user is already part of)
+  // Rejoin an existing session
   const rejoinSession = useCallback(async (sessionId: string) => {
     if (!user) {
       setConnectionError('You must be logged in to rejoin a session');
@@ -925,10 +925,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setMessages([]);
       setOutput([]);
       setConnectionError(null);
-      // Reset files to empty (user creates new file when needed)
       setFiles([]);
       setCurrentFileId(null);
-      // Refresh sessions list
       refreshMySessions();
     }
   }, [session, user, refreshMySessions]);
@@ -1010,6 +1008,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   return (
     <SessionContext.Provider
       value={{
+        user,
         session,
         isConnected,
         isConnecting,
@@ -1046,7 +1045,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }}
     >
       {children}
-    </SessionContext.Provider >
+    </SessionContext.Provider>
   );
 }
 

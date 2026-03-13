@@ -146,9 +146,13 @@ Functions:
 
 ## Known Issues
 
-1. **Pre-existing TypeScript errors** in:
+~~1. **Pre-existing TypeScript errors** in:
    - `chat-panel.tsx` - ChatMessage type missing userId
-   - `session-dialog.tsx` - className prop issue
+   - `session-dialog.tsx` - className prop issue~~ ✅ Fixed
+
+1. **File locking TypeScript errors** (fixed 2026-03-12):
+   - `file-explorer.tsx` - `FileTree` component missing `fileLocks` and `openFileLock` props
+   - Fixed by adding props to `FileTreeProps` interface and passing them from `FileExplorer`
 
 ---
 
@@ -156,9 +160,15 @@ Functions:
 
 | File | Changes |
 |------|---------|
-| `backend/index.js` | Docker Hub API endpoints, auth functions, build integration |
-| `frontend/src/components/ide/header.tsx` | Docker Hub UI, state management, API calls |
+| `backend/index.js` | File lock manager (~100 lines), Docker Hub API endpoints (/v2/auth/token), auth functions |
+| `frontend/src/contexts/session-context.tsx` | File lock state/functions, Socket terminal, killTerminal |
+| `frontend/src/components/ide/file-explorer.tsx` | Lock indicator, acquires lock on click |
+| `frontend/src/components/ide/code-editor-panel.tsx` | Read-only mode when locked |
+| `frontend/src/components/ide/header.tsx` | Docker Hub UI, custom modal |
+| `frontend/src/components/ide/chat-panel.tsx` | Fixed ChatMessage userId |
+| `frontend/src/components/session/session-dialog.tsx` | Fixed className prop |
 | `AGENTS.md` | Documentation updated |
+| `CONTEXT.md` | Updated with latest changes |
 
 ---
 
@@ -182,4 +192,4 @@ Functions:
 
 ---
 
-*Last Updated: 2026-03-04*
+*Last Updated: 2026-03-12*

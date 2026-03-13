@@ -8,7 +8,10 @@ Real-time collaborative code editor with multi-language support and session mana
 - 👥 **Real-time Collaboration** - Multiple users can code together
 - 🎭 **Role-based Access** - Host, Co-Host, Editor, Viewer roles
 - 💬 **Live Chat** - Built-in messaging for session participants
+- 🔒 **File Locking** - Prevents edit conflicts with lock indicators
 - ▶️ **Multi-language Execution** - Python, JavaScript, TypeScript, Java, C++, C, C#
+- 🖥️ **Terminal** - Full terminal with real-time streaming (no timeout)
+- 🐳 **Docker Export** - Build and push container images to Docker Hub
 - 🌐 **ngrok Tunneling** - Share sessions with remote users
 
 ## Quick Start
@@ -16,55 +19,50 @@ Real-time collaborative code editor with multi-language support and session mana
 ### Install Dependencies
 
 ```bash
-# Install Python dependencies
-pip install -r requirements.txt
-
 # Install Node.js dependencies
-cd frontend && npm install && cd ..
+cd frontend && npm install
+cd ../backend && npm install
 ```
 
 ### Run Development Server
 
 ```bash
-# Runs both frontend and backend together
+# From root directory - runs both frontend and backend together
 npm run dev
 ```
 
 The frontend will be available at http://localhost:9002
-The backend API will be at http://localhost:5000
+The backend runs on port 5001 (dynamically allocated if in use)
 
 Press Ctrl+C to stop both services.
 
 ## Project Structure
 
 ```
-IDE/
-├── backend/           # Python Flask + Socket.IO server
-│   └── server.py
-├── frontend/          # Next.js React application
+CodeForge/
+├── backend/           # Node.js Express + Socket.IO server
+│   ├── index.js       # Main server entry
+│   ├── package.json
+│   └── firebase-service-account.json
+├── frontend/          # Next.js 15 React application
 │   ├── src/
 │   │   ├── app/           # Pages
-│   │   ├── components/    # UI components
-│   │   ├── contexts/      # State management
-│   │   └── hooks/         # Custom hooks
+│   │   ├── components/   # UI components
+│   │   │   ├── ide/      # IDE components (editor, terminal, file explorer)
+│   │   │   ├── ui/       # Reusable UI components
+│   │   │   └── session/  # Session management components
+│   │   ├── contexts/     # React contexts (auth, session)
+│   │   └── lib/          # Utilities
 │   └── package.json
-├── requirements.txt
-└── start.py
+├── AGENTS.md          # Developer guidelines
+├── CONTEXT.md         # Current development context
+└── package.json
 ```
 
 ## Tech Stack
 
 **Frontend:** Next.js 15, TypeScript, Tailwind CSS, Radix UI, Socket.IO, Firebase Auth
-**Backend:** Python Flask, python-socketio, eventlet, pyngrok
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/health` | GET | Health check |
-| `/api/execute` | POST | Execute code |
-| `/api/terminal` | POST | Run terminal command |
-| `/api/languages` | GET | List supported languages |
+**Backend:** Node.js, Express, Socket.IO, Firebase Admin, Dockerode
 
 ## Socket.IO Events
 
@@ -78,13 +76,17 @@ IDE/
 | `approve_user` | Approve join request (host) |
 | `deny_user` | Deny join request (host) |
 | `kick_user` | Kick user (host) |
-| `ban_user` | Ban user (host) |
 | `change_role` | Change user role (host) |
 | `lock_session` | Lock/unlock session (host) |
 | `chat_message` | Send chat message |
 | `run_code` | Execute code |
 | `cursor_update` | Broadcast cursor position |
 | `file_update` | Sync file changes |
+| `file_open` | Open a file (acquires lock) |
+| `file_close` | Close a file (releases lock) |
+| `file_write_activity` | Update write activity timestamp |
+| `terminal_run` | Run terminal command |
+| `terminal_kill` | Kill terminal process |
 
 ### Server → Client
 
@@ -103,34 +105,58 @@ IDE/
 | `execution_result` | Code execution result |
 | `cursor_update` | Remote cursor update |
 | `file_update` | Remote file change |
+| `file_lock_update` | File lock status changed |
+| `file_lock_released` | File lock was released |
+| `terminal_output` | Terminal output streaming |
+| `terminal_exit` | Terminal process exited |
 
-## Firebase Setup (Optional)
+## Firebase Setup (Required)
 
 1. Create a Firebase project at https://console.firebase.google.com
-2. Go to Project Settings → Service Accounts
-3. Click "Generate new private key"
-4. Save as `firebase-service-account.json` in project root
+2. Enable **Authentication** (Email/Password)
+3. Enable **Firestore Database**
+4. Go to Project Settings → Service Accounts
+5. Click "Generate new private key"
+6. Save as `firebase-service-account.json` in `backend/` directory
+7. Create `frontend/.env.local` with your Firebase config:
 
-## ngrok Setup (Optional)
+```
+NEXT_PUBLIC_FIREBASE_API_KEY=your_api_key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
+```
 
-1. Sign up at https://ngrok.com
-2. Install: `pip install pyngrok`
-3. Authenticate: `ngrok config add-authtoken YOUR_TOKEN`
+## Docker Hub Setup (Optional)
 
-Server will automatically create a tunnel and display the public URL.
+1. Create a Docker Hub account at https://hub.docker.com
+2. Generate a Personal Access Token (PAT) at https://hub.docker.com/settings/security
+3. Use your username/email + PAT in the Export dialog
 
 ## Configuration
 
-Edit `backend/server.py` CONFIG dict:
+| Setting | Location | Default |
+|---------|----------|---------|
+| Frontend port | `package.json` | 9002 |
+| Backend port | `backend/index.js` | 5001 |
+| Firebase config | `frontend/.env.local` | - |
+| Service account | `backend/firebase-service-account.json` | - |
 
-```python
-CONFIG = {
-    'host': '0.0.0.0',
-    'port': 5000,
-    'max_execution_time': 30,
-    'max_output_size': 50000,
-    'enable_ngrok': True,
-    'firebase_credentials_path': 'firebase-service-account.json',
-    'cors_origins': '*',
-}
-```
+## Key Features Details
+
+### Terminal
+- Real-time streaming via Socket.IO (no timeout)
+- Full folder structure preserved
+- Files written to temp directory before execution
+
+### File Locking
+- Auto-expire after 5 minutes of no write activity
+- Instant release on file close or user disconnect
+- Read-only mode for locked files
+
+### Docker Export
+- Auto-detects framework (Flask, FastAPI, Express, Django)
+- Builds and pushes to Docker Hub
+- Creates repo if it doesn't exist
