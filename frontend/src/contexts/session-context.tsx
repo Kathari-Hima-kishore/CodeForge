@@ -14,8 +14,7 @@ import {
   serverTimestamp,
   Timestamp,
   query,
-  where,
-  orderBy
+  where
 } from 'firebase/firestore';
 import { useAuth } from './auth-context';
 import { User } from 'firebase/auth';
@@ -130,6 +129,8 @@ interface SessionContextType {
   // Code execution
   isExecuting: boolean;
   executeCode: (language: string, code: string) => void;
+  sendExecutionInput: (input: string) => void;
+  killExecution: () => void;
 
   // Session actions
   createSession: (name: string) => Promise<void>;
@@ -186,6 +187,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [isExecuting, setIsExecuting] = useState(false);
   const [isTerminalRunning, setIsTerminalRunning] = useState(false);
 
+  // Refs to access current session/user inside socket event handlers without stale closures
+  const sessionRef = React.useRef<Session | null>(null);
+  const userRef = React.useRef<typeof user>(null);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => { userRef.current = user; }, [user]);
+
   // Fetch user's existing sessions from Firestore
   useEffect(() => {
     if (!user) {
@@ -195,11 +202,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     setIsLoadingSessions(true);
 
-    // Query for sessions where user is the host
+    // Query for sessions where user is the host — no isActive filter so
+    // sessions that were accidentally deactivated (backend crash, etc.) still appear
     const hostQuery = query(
       collection(db, 'sessions'),
-      where('hostId', '==', user.uid),
-      where('isActive', '==', true)
+      where('hostId', '==', user.uid)
     );
 
     const unsubscribeHost = onSnapshot(hostQuery, (snapshot) => {
@@ -210,7 +217,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           name: data.name,
           hostName: data.hostName,
           participantCount: Object.keys(data.participants || {}).length,
-          createdAt: data.createdAt?.toMillis() || Date.now(),
+          createdAt: typeof data.createdAt === 'number'
+            ? data.createdAt
+            : (data.createdAt as any)?.toMillis?.() || Date.now(),
           isHost: true,
         }));
 
@@ -226,10 +235,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
 
     // Query for sessions where user is a participant (but not host)
+    // Note: no orderBy to avoid requiring composite index - we sort client-side
     const participantQuery = query(
       collection(db, 'sessions'),
-      where('isActive', '==', true),
-      orderBy('createdAt', 'desc')
+      where('isActive', '==', true)
     );
 
     const unsubscribeParticipant = onSnapshot(participantQuery, (snapshot) => {
@@ -246,7 +255,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           name: data.name,
           hostName: data.hostName,
           participantCount: Object.keys(data.participants || {}).length,
-          createdAt: data.createdAt?.toMillis() || Date.now(),
+          createdAt: typeof data.createdAt === 'number'
+            ? data.createdAt
+            : (data.createdAt as any)?.toMillis?.() || Date.now(),
           isHost: false,
         }));
 
@@ -520,6 +531,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setIsConnected(true);
       setConnectionError(null);
       console.log('Connected to backend');
+
+      // Re-join session room if we already have an active session (handles backend restart/reconnect)
+      const currentSession = sessionRef.current;
+      const currentUser = userRef.current;
+      if (currentSession?.sessionId && currentUser) {
+        console.log('🔄 Rejoining session room after reconnect:', currentSession.sessionId);
+        newSocket.emit('join_session', {
+          session_id: currentSession.sessionId,
+          sessionId: currentSession.sessionId,
+          userId: currentUser.uid,
+          userName: currentUser.displayName || currentUser.email?.split('@')[0] || 'User',
+          userEmail: currentUser.email,
+        });
+      }
     });
 
     newSocket.on('disconnect', () => {
@@ -537,22 +562,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       console.log('Socket error:', error);
     });
 
-    // Handle code execution results (from other users)
-    newSocket.on('execution_result', (data) => {
-      const executor = data.executed_by ? `[${data.executed_by}] ` : '';
-      if (data.error) {
-        addOutput('error', `${executor}❌ Execution Error: ${data.error}`);
+    // Handle streaming code output
+    newSocket.on('execution_output', (data) => {
+      if (data.isError) {
+        addOutput('error', data.output);
       } else {
-        if (data.stdout) {
-          addOutput('output', data.stdout);
-        }
-        if (data.stderr) {
-          addOutput('error', data.stderr);
-        }
-        if (!data.stdout && !data.stderr) {
-          const time = typeof data.execution_time === 'number' ? data.execution_time.toFixed(3) : '0';
-          addOutput('success', `${executor}✓ Code executed in ${time}s (no output)`);
-        }
+        addOutput('output', data.output);
+      }
+    });
+
+    // Handle code execution completion
+    newSocket.on('execution_exit', (data) => {
+      setIsExecuting(false);
+      if (data.error) {
+        addOutput('error', `❌ ${data.error}`);
+      } else if (data.killed) {
+        addOutput('info', '[Execution killed]');
+      } else if (data.code !== 0 && data.code !== null) {
+        addOutput('error', `[Process exited with code ${data.code}]`);
+      } else {
+        const time = typeof data.execution_time === 'number' ? data.execution_time.toFixed(3) : null;
+        addOutput('success', time ? `✓ Done (${time}s)` : '✓ Done');
       }
     });
 
@@ -635,63 +665,48 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setIsExecuting(true);
     addOutput('info', `⏳ Running ${language} code...`);
 
-    try {
-      let isDone = false;
+    const getFilePath = (file: { name: string; parentId?: string | null }): string => {
+      const parts: string[] = [file.name];
+      let current = file;
+      while (current.parentId) {
+        const parent = files.find(f => f.id === current.parentId);
+        if (parent) { parts.unshift(parent.name); current = parent; } else break;
+      }
+      return parts.join('/');
+    };
+    const projectFiles: Record<string, string> = {};
+    files.filter(f => !f.isFolder).forEach(f => {
+      projectFiles[getFilePath(f)] = f.content;
+    });
 
-      const timeoutId = setTimeout(() => {
-        if (!isDone) {
-          isDone = true;
-          setIsExecuting(false);
-          addOutput('error', '❌ Execution timed out (No response from backend)');
-        }
-      }, 35000);
-
-      const getFilePath = (file: { name: string; parentId?: string | null }): string => {
-        const parts: string[] = [file.name];
-        let current = file;
-        while (current.parentId) {
-          const parent = files.find(f => f.id === current.parentId);
-          if (parent) { parts.unshift(parent.name); current = parent; } else break;
-        }
-        return parts.join('/');
-      };
-      const projectFiles: Record<string, string> = {};
-      files.filter(f => !f.isFolder).forEach(f => {
-        projectFiles[getFilePath(f)] = f.content;
-      });
-
-      socket.emit('run_code', {
-        sessionId: session?.sessionId || 'standalone',
-        language,
-        code,
-        projectFiles
-      }, (response: any) => {
-        if (isDone) return;
-        isDone = true;
-        clearTimeout(timeoutId);
+    socket.emit('run_code', {
+      sessionId: session?.sessionId || 'standalone',
+      language,
+      code,
+      projectFiles
+    }, (response: any) => {
+      // Callback fires immediately after compilation (or on compilation error)
+      if (response?.error) {
         setIsExecuting(false);
-
-        if (response?.error) {
-          addOutput('error', `❌ Execution Error: ${response.error}`);
-        } else {
-          if (response.stdout) {
-            addOutput('output', response.stdout);
-          }
-          if (response.stderr) {
-            addOutput('error', response.stderr);
-          }
-          if (!response.stdout && !response.stderr) {
-            const time = typeof response.execution_time === 'number' ? response.execution_time.toFixed(3) : '0';
-            addOutput('success', `✓ Code executed in ${time}s (no output)`);
-          }
-        }
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      addOutput('error', `❌ Failed to send execution request: ${message}`);
-      setIsExecuting(false);
-    }
+        addOutput('error', `❌ ${response.error}`);
+      }
+      // If response.streaming === true: execution has started, output comes via execution_output events
+    });
   }, [socket, isConnected, session?.sessionId, files, addOutput]);
+
+  const sendExecutionInput = useCallback((input: string) => {
+    if (socket && isConnected) {
+      socket.emit('execution_input', { input });
+      addOutput('output', `> ${input}`);
+    }
+  }, [socket, isConnected, addOutput]);
+
+  const killExecution = useCallback(() => {
+    if (socket && isConnected) {
+      socket.emit('execution_kill');
+    }
+    setIsExecuting(false);
+  }, [socket, isConnected]);
 
   // Create a new session
   const createSession = useCallback(async (name: string) => {
@@ -847,14 +862,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
 
       const data = sessionSnap.data() as SessionData;
+      const isHost = data.hostId === user.uid;
 
       if (!data.isActive) {
-        throw new Error('This session has ended.');
+        if (isHost) {
+          // Host can reactivate their own session (e.g. after backend crash set it inactive)
+          await updateDoc(sessionRef, { isActive: true });
+        } else {
+          throw new Error('This session has ended.');
+        }
       }
 
       // Check if user is already a participant
       const existingParticipant = data.participants[user.uid];
-      const isHost = data.hostId === user.uid;
 
       if (!existingParticipant && !isHost) {
         throw new Error('You are no longer a member of this session.');
@@ -1033,6 +1053,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         addOutput,
         isExecuting,
         executeCode,
+        sendExecutionInput,
+        killExecution,
         createSession,
         joinSession,
         rejoinSession,

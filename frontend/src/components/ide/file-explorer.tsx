@@ -1,7 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Folder, FolderOpen, Plus, Trash2, Pencil, Check, X, FileCode, ChevronRight, ChevronDown, ChevronLeft } from 'lucide-react';
+import {
+  Folder, FolderOpen, Trash2, Pencil, Check, X,
+  ChevronRight, ChevronDown, ChevronLeft, FilePlus
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/contexts/session-context';
 import { cn } from '@/lib/utils';
@@ -9,36 +12,42 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
 const LANGUAGES = [
-  { id: 'javascript', name: 'JavaScript', icon: '📜', extension: '.js' },
-  { id: 'typescript', name: 'TypeScript', icon: '📘', extension: '.ts' },
-  { id: 'python', name: 'Python', icon: '🐍', extension: '.py' },
-  { id: 'java', name: 'Java', icon: '☕', extension: '.java' },
-  { id: 'cpp', name: 'C++', icon: '⚙️', extension: '.cpp' },
-  { id: 'c', name: 'C', icon: '⚙️', extension: '.c' },
-  { id: 'csharp', name: 'C#', icon: '#️⃣', extension: '.cs' },
-  { id: 'html', name: 'HTML', icon: '🌐', extension: '.html' },
-  { id: 'css', name: 'CSS', icon: '🎨', extension: '.css' },
+  { id: 'javascript', name: 'JavaScript', ext: '.js',   dot: 'bg-yellow-400',  textColor: 'text-yellow-400' },
+  { id: 'typescript', name: 'TypeScript', ext: '.ts',   dot: 'bg-blue-400',    textColor: 'text-blue-400' },
+  { id: 'python',     name: 'Python',     ext: '.py',   dot: 'bg-emerald-400', textColor: 'text-emerald-400' },
+  { id: 'java',       name: 'Java',       ext: '.java', dot: 'bg-orange-400',  textColor: 'text-orange-400' },
+  { id: 'cpp',        name: 'C++',        ext: '.cpp',  dot: 'bg-sky-300',     textColor: 'text-sky-300' },
+  { id: 'c',          name: 'C',          ext: '.c',    dot: 'bg-slate-400',   textColor: 'text-slate-400' },
+  { id: 'csharp',     name: 'C#',         ext: '.cs',   dot: 'bg-purple-400',  textColor: 'text-purple-400' },
+  { id: 'html',       name: 'HTML',       ext: '.html', dot: 'bg-red-400',     textColor: 'text-red-400' },
+  { id: 'css',        name: 'CSS',        ext: '.css',  dot: 'bg-pink-400',    textColor: 'text-pink-400' },
 ];
 
-const getLanguageIcon = (language: string) => {
-  const lang = LANGUAGES.find(l => l.id === language);
-  return lang?.icon || '📄';
-};
+function getLangConfig(language: string) {
+  return LANGUAGES.find(l => l.id === language) ?? { dot: 'bg-gray-500', textColor: 'text-gray-400' };
+}
+
+function FileDot({ language }: { language: string }) {
+  const l = getLangConfig(language);
+  return (
+    <div className="flex items-center justify-center w-4 h-4 shrink-0">
+      <div className={`w-1.5 h-1.5 rounded-full ${l.dot} opacity-80`} />
+    </div>
+  );
+}
 
 export function FileExplorer({ isCollapsed = false, onCollapse }: { isCollapsed?: boolean; onCollapse?: (collapsed: boolean) => void }) {
-  const { files, currentFileId, setCurrentFileId, createFile, deleteFile, renameFile, createFolder, renameFolder, deleteFolder, session, user } = useSession();
+  const { files, currentFileId, setCurrentFileId, createFile, deleteFile, renameFile, createFolder, renameFolder, deleteFolder, session } = useSession();
   const [isCreating, setIsCreating] = useState(false);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [editingFileId, setEditingFileId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [newFolderName, setNewFolderName] = useState('New Folder');
-  const [newFolderParentId, setNewFolderParentId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -48,14 +57,10 @@ export function FileExplorer({ isCollapsed = false, onCollapse }: { isCollapsed?
     }
   }, [editingFileId]);
 
-  const toggleFolder = (folderId: string) => {
+  const toggleFolder = (id: string) => {
     setExpandedFolders(prev => {
       const next = new Set(prev);
-      if (next.has(folderId)) {
-        next.delete(folderId);
-      } else {
-        next.add(folderId);
-      }
+      next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   };
@@ -64,48 +69,30 @@ export function FileExplorer({ isCollapsed = false, onCollapse }: { isCollapsed?
 
   const handleCreateFile = (langId: string, parentId: string | null = null) => {
     const lang = LANGUAGES.find(l => l.id === langId);
-    const fileName = `untitled${lang?.extension || '.txt'}`;
-    createFile(fileName, langId, parentId);
+    createFile(`untitled${lang?.ext || '.txt'}`, langId, parentId);
     setIsCreating(false);
-    if (parentId) {
-      setExpandedFolders(prev => new Set([...prev, parentId]));
-    }
+    if (parentId) setExpandedFolders(prev => new Set([...prev, parentId]));
   };
 
   const handleCreateFolder = () => {
-    if (newFolderName.trim()) {
-      createFolder(newFolderName.trim(), newFolderParentId);
-    }
+    if (newFolderName.trim()) createFolder(newFolderName.trim(), null);
     setIsCreatingFolder(false);
-    setNewFolderParentId(null);
     setNewFolderName('New Folder');
   };
 
-  const handleCreateFolderInFolder = (parentId: string | null) => {
-    createFolder('New Folder', parentId);
-    if (parentId) {
-      setExpandedFolders(prev => new Set([...prev, parentId]));
-    }
-  };
-
-  const handleDeleteFile = (fileId: string, e: React.MouseEvent) => {
+  const handleDelete = (fileId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const file = files.find(f => f.id === fileId);
     if (file?.isFolder) {
-      if (confirm('Delete this folder and all its contents?')) {
-        deleteFolder(fileId);
-      }
+      if (confirm('Delete this folder and all contents?')) deleteFolder(fileId);
     } else {
-      if (files.length <= 1) return;
-      if (confirm('Delete this file?')) {
-        deleteFile(fileId);
-      }
+      if (files.filter(f => !f.isFolder).length <= 1) return;
+      if (confirm('Delete this file?')) deleteFile(fileId);
     }
   };
 
   const handleRename = (fileId: string, currentName: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const file = files.find(f => f.id === fileId);
     setEditingFileId(fileId);
     setEditingName(currentName);
   };
@@ -113,357 +100,217 @@ export function FileExplorer({ isCollapsed = false, onCollapse }: { isCollapsed?
   const handleRenameSubmit = () => {
     if (editingFileId && editingName.trim()) {
       const file = files.find(f => f.id === editingFileId);
-      if (file?.isFolder) {
-        renameFolder(editingFileId, editingName.trim());
-      } else {
-        renameFile(editingFileId, editingName.trim());
-      }
+      file?.isFolder ? renameFolder(editingFileId, editingName.trim()) : renameFile(editingFileId, editingName.trim());
     }
     setEditingFileId(null);
     setEditingName('');
   };
 
-  const handleRenameCancel = () => {
-    setEditingFileId(null);
-    setEditingName('');
-  };
+  const handleRenameCancel = () => { setEditingFileId(null); setEditingName(''); };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleRenameSubmit();
-    } else if (e.key === 'Escape') {
-      handleRenameCancel();
-    }
+    if (e.key === 'Enter') handleRenameSubmit();
+    else if (e.key === 'Escape') handleRenameCancel();
   };
 
   if (isCollapsed) {
     return (
-      <aside className="flex-shrink-0 border-r bg-secondary/30 flex flex-col items-center py-4 gap-4 transition-all duration-300 h-full w-full">
+      <aside className="flex-shrink-0 border-r border-[#1a1b2e] bg-[#0a0b14] flex flex-col items-center py-3 gap-3 h-full w-full">
         <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 hover:bg-secondary"
+          variant="ghost" size="icon"
+          className="h-7 w-7 text-gray-600 hover:text-gray-400 hover:bg-[#1a1b2e] rounded-md"
           onClick={() => onCollapse?.(false)}
           title="Expand"
         >
-          <ChevronRight className="h-4 w-4" />
+          <ChevronRight className="h-3.5 w-3.5" />
         </Button>
-        <div className="w-full h-px bg-border/50" />
-        <div className="flex flex-col items-center gap-2">
-          <Folder className="h-5 w-5 text-yellow-500" />
-        </div>
+        <div className="w-4 h-px bg-[#1a1b2e]" />
+        <Folder className="h-4 w-4 text-yellow-500/50" />
       </aside>
     );
   }
 
-  return (
-    <aside className="border-r bg-secondary/30 p-2 flex flex-col h-full w-full">
-      <div className="flex items-center justify-between p-2">
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground"
-            onClick={() => onCollapse?.(true)}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <h2 className="text-sm font-semibold uppercase text-muted-foreground tracking-wider">Files</h2>
-        </div>
-        {canEdit && (
-          <DropdownMenu open={isCreating} onOpenChange={setIsCreating}>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7">
-                <Plus className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => {
-                setIsCreating(false);
-                setIsCreatingFolder(true);
-              }}>
-                <Folder className="h-4 w-4 mr-2" />
-                New Folder
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              {LANGUAGES.map(lang => (
-                <DropdownMenuItem key={lang.id} onClick={() => handleCreateFile(lang.id)}>
-                  <span className="mr-2">{lang.icon}</span>
-                  {lang.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
-      
-      <div className="flex-1 overflow-y-auto">
-        {isCreatingFolder && (
-          <div className="flex items-center h-8 px-2 rounded-md text-sm">
-            <Folder className="h-4 w-4 mr-2 text-yellow-500" />
-            <input
-              ref={inputRef}
-              type="text"
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  handleCreateFolder();
-                } else if (e.key === 'Escape') {
-                  setIsCreatingFolder(false);
-                  setNewFolderName('New Folder');
-                }
-              }}
-              onBlur={handleCreateFolder}
-              className="flex-1 bg-background border border-primary rounded px-1 text-xs"
-              autoFocus
-            />
-          </div>
-        )}
-        
-        {files.length === 0 && !isCreatingFolder ? (
-          <div className="text-center text-muted-foreground text-sm py-4">
-            No files yet
-          </div>
-        ) : (
-          <FileTree
-            files={files}
-            currentFileId={currentFileId}
-            expandedFolders={expandedFolders}
-            editingFileId={editingFileId}
-            editingName={editingName}
-            canEdit={canEdit}
-            onToggleFolder={toggleFolder}
-            onSelectFile={setCurrentFileId}
-            onRename={handleRename}
-            onRenameSubmit={handleRenameSubmit}
-            onRenameCancel={handleRenameCancel}
-            onDelete={handleDeleteFile}
-            onKeyDown={handleKeyDown}
-            inputRef={inputRef}
-            setEditingName={setEditingName}
-            createFile={handleCreateFile}
-            createFolder={(parentId: string | null) => {
-              handleCreateFolderInFolder(parentId);
-            }}
-          />
-        )}
-      </div>
-      
-      {session && (
-        <div className="mt-2 pt-2 border-t text-xs text-muted-foreground px-2">
-          <div className="flex items-center gap-1">
-            <Folder className="h-3 w-3" />
-            <span>Session: {session.sessionId.slice(0, 8)}...</span>
-          </div>
-        </div>
-      )}
-    </aside>
-  );
-}
-
-interface FileTreeProps {
-  files: ReturnType<typeof useSession>['files'];
-  currentFileId: string | null;
-  expandedFolders: Set<string>;
-  editingFileId: string | null;
-  editingName: string;
-  canEdit: boolean;
-  onToggleFolder: (id: string) => void;
-  onSelectFile: (id: string) => void;
-  onRename: (id: string, name: string, e: React.MouseEvent) => void;
-  onRenameSubmit: () => void;
-  onRenameCancel: () => void;
-  onDelete: (id: string, e: React.MouseEvent) => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
-  inputRef: React.RefObject<HTMLInputElement | null>;
-  setEditingName: (name: string) => void;
-  createFile: (langId: string, parentId: string | null) => void;
-  createFolder: (parentId: string | null) => void;
-}
-
-function FileTree({
-  files,
-  currentFileId,
-  expandedFolders,
-  editingFileId,
-  editingName,
-  canEdit,
-  onToggleFolder,
-  onSelectFile,
-  onRename,
-  onRenameSubmit,
-  onRenameCancel,
-  onDelete,
-  onKeyDown,
-  inputRef,
-  setEditingName,
-  createFile,
-  createFolder,
-}: FileTreeProps) {
-  const [contextMenuFolder, setContextMenuFolder] = useState<string | null>(null);
-
   const rootItems = files.filter(f => !f.parentId);
   const getChildren = (parentId: string) => files.filter(f => f.parentId === parentId);
 
-  const renderItem = (item: typeof files[0], depth: number = 0) => {
+  const renderItem = (item: typeof files[0], depth = 0): React.ReactNode => {
     const isExpanded = expandedFolders.has(item.id);
     const isFolder = item.isFolder;
+    const isActive = currentFileId === item.id;
     const children = isFolder ? getChildren(item.id) : [];
 
     return (
       <div key={item.id}>
         {editingFileId === item.id ? (
           <div
-            className="flex items-center h-8 px-2 rounded-md text-sm"
-            style={{ paddingLeft: `${depth * 12 + 8}px` }}
-            onClick={(e) => e.stopPropagation()}
+            className="flex items-center h-7 gap-1 rounded text-sm px-1.5"
+            style={{ paddingLeft: `${depth * 12 + 6}px` }}
           >
-            {isFolder ? (
-              <Folder className="h-4 w-4 mr-2 text-yellow-500" />
-            ) : (
-              <span className="mr-2 text-base">{getLanguageIcon(item.language)}</span>
-            )}
+            {isFolder
+              ? <Folder className="h-3.5 w-3.5 mr-1 text-yellow-500/70 shrink-0" />
+              : <FileDot language={item.language} />
+            }
             <input
               ref={inputRef}
               type="text"
               value={editingName}
               onChange={(e) => setEditingName(e.target.value)}
-              onKeyDown={onKeyDown}
-              onBlur={onRenameSubmit}
-              className="flex-1 bg-background border border-primary rounded px-1 text-xs"
-              autoFocus
+              onKeyDown={handleKeyDown}
+              onBlur={handleRenameSubmit}
+              className="flex-1 bg-[#1a1b2e] border border-blue-500/50 rounded px-1.5 text-[11px] outline-none text-gray-200"
             />
-            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={onRenameSubmit}>
-              <Check className="h-3 w-3 text-green-500" />
+            <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 hover:bg-[#1a1b2e]" onClick={handleRenameSubmit}>
+              <Check className="h-2.5 w-2.5 text-emerald-400" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-5 w-5" onClick={onRenameCancel}>
-              <X className="h-3 w-3 text-red-500" />
+            <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 hover:bg-[#1a1b2e]" onClick={handleRenameCancel}>
+              <X className="h-2.5 w-2.5 text-red-400" />
             </Button>
           </div>
         ) : (
-          <DropdownMenu open={contextMenuFolder === item.id} onOpenChange={(open) => {
-            if (!open) setContextMenuFolder(null);
-          }}>
+          <>
             <div
               className={cn(
-                "group flex items-center h-8 px-2 rounded-md cursor-pointer text-sm",
-                currentFileId === item.id
-                  ? "bg-primary/20 text-foreground"
-                  : "hover:bg-muted text-muted-foreground hover:text-foreground"
+                'group flex items-center h-7 rounded cursor-pointer text-[11.5px] transition-colors duration-100',
+                isActive && !isFolder
+                  ? 'bg-blue-500/12 text-gray-200 border-l-2 border-blue-500/60'
+                  : 'text-gray-500 hover:bg-[#1a1b2e]/70 hover:text-gray-300'
               )}
-              style={{ paddingLeft: `${depth * 12 + 8}px` }}
-            onClick={() => {
-                if (isFolder) {
-                  onToggleFolder(item.id);
-                } else {
-                  onSelectFile(item.id);
-                }
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                if (canEdit) {
-                  setContextMenuFolder(item.id);
-                }
-              }}
+              style={{ paddingLeft: `${depth * 12 + (isFolder ? 4 : 6)}px`, paddingRight: '4px' }}
+              onClick={() => isFolder ? toggleFolder(item.id) : setCurrentFileId(item.id)}
+              onContextMenu={(e) => { if (canEdit) { e.preventDefault(); handleRename(item.id, item.name, e as any); } }}
             >
               {isFolder ? (
                 <>
-                  {isExpanded ? (
-                    <ChevronDown className="h-4 w-4 mr-1" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 mr-1" />
-                  )}
-                  {isExpanded ? (
-                    <FolderOpen className="h-4 w-4 mr-2 text-yellow-500" />
-                  ) : (
-                    <Folder className="h-4 w-4 mr-2 text-yellow-500" />
-                  )}
+                  {isExpanded
+                    ? <ChevronDown className="h-3 w-3 mr-1 shrink-0 text-gray-600" />
+                    : <ChevronRight className="h-3 w-3 mr-1 shrink-0 text-gray-600" />
+                  }
+                  {isExpanded
+                    ? <FolderOpen className="h-3.5 w-3.5 mr-1.5 text-yellow-400/70 shrink-0" />
+                    : <Folder    className="h-3.5 w-3.5 mr-1.5 text-yellow-500/50 shrink-0" />
+                  }
                 </>
               ) : (
-                <>
-                  <span className="w-4 mr-2" />
-                  <span className="mr-2 text-base">{getLanguageIcon(item.language)}</span>
-                </>
+                <FileDot language={item.language} />
               )}
-              
-              <span className="flex-1 truncate">{item.name}</span>
-              
+
+              <span className={cn(
+                'flex-1 truncate font-medium',
+                isActive && !isFolder ? 'text-gray-100' : '',
+              )}>
+                {item.name}
+              </span>
+
               {canEdit && (
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {isFolder && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Plus className="h-3 w-3" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent>
-                        <DropdownMenuItem onClick={() => createFile('javascript', item.id)}>
-                          <span className="mr-2">📜</span>
-                          New File
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => createFolder(item.id)}>
-                          <Folder className="h-4 w-4 mr-2" />
-                          New Folder
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6"
-                    onClick={(e) => onRename(item.id, item.name, e)}
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
+                  <button
+                    className="h-5 w-5 flex items-center justify-center rounded hover:bg-[#252640] text-gray-600 hover:text-gray-300 transition-colors"
+                    onClick={(e) => handleRename(item.id, item.name, e)}
                   >
-                    <Pencil className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6"
-                    onClick={(e) => onDelete(item.id, e)}
+                    <Pencil className="h-2.5 w-2.5" />
+                  </button>
+                  <button
+                    className="h-5 w-5 flex items-center justify-center rounded hover:bg-red-500/15 text-gray-600 hover:text-red-400 transition-colors"
+                    onClick={(e) => handleDelete(item.id, e)}
                   >
-                    <Trash2 className="h-3 w-3 text-destructive" />
-                  </Button>
+                    <Trash2 className="h-2.5 w-2.5" />
+                  </button>
                 </div>
               )}
             </div>
-            
-            {isFolder && canEdit && (
-              <DropdownMenuContent>
-                <DropdownMenuItem onClick={() => {
-                  createFile('javascript', item.id);
-                  setContextMenuFolder(null);
-                }}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  New File
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => {
-                  createFolder(item.id);
-                  setContextMenuFolder(null);
-                }}>
-                  <Folder className="h-4 w-4 mr-2" />
-                  New Folder
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            )}
-          </DropdownMenu>
+
+            {isFolder && isExpanded && children.map(child => renderItem(child, depth + 1))}
+          </>
         )}
-        
-        {isFolder && isExpanded && children.map(child => renderItem(child, depth + 1))}
       </div>
     );
   };
 
   return (
-    <>
-      {rootItems.map(item => renderItem(item))}
-    </>
+    <aside className="border-r border-[#1a1b2e] bg-[#0a0b14] flex flex-col h-full w-full">
+      {/* Header */}
+      <div className="flex items-center justify-between px-2.5 py-2 border-b border-[#1a1b2e] shrink-0">
+        <div className="flex items-center gap-1.5">
+          <button
+            className="h-5 w-5 flex items-center justify-center rounded hover:bg-[#1a1b2e] text-gray-700 hover:text-gray-400 transition-colors"
+            onClick={() => onCollapse?.(true)}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          <span className="text-[10px] font-bold text-gray-600 uppercase tracking-wider">Files</span>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-0.5">
+            <button
+              className="h-6 w-6 flex items-center justify-center rounded hover:bg-[#1a1b2e] text-gray-600 hover:text-gray-400 transition-colors"
+              title="New Folder"
+              onClick={() => setIsCreatingFolder(true)}
+            >
+              <Folder className="h-3.5 w-3.5" />
+            </button>
+            <DropdownMenu open={isCreating} onOpenChange={setIsCreating}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="h-6 w-6 flex items-center justify-center rounded hover:bg-[#1a1b2e] text-gray-600 hover:text-gray-400 transition-colors"
+                  title="New File"
+                >
+                  <FilePlus className="h-3.5 w-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                {LANGUAGES.map(lang => (
+                  <DropdownMenuItem key={lang.id} onClick={() => handleCreateFile(lang.id)} className="gap-2">
+                    <div className={`w-1.5 h-1.5 rounded-full ${lang.dot} shrink-0`} />
+                    <span className="text-xs">{lang.name}</span>
+                    <span className="text-xs text-muted-foreground ml-auto font-mono">{lang.ext}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+      </div>
+
+      {/* File tree */}
+      <div className="flex-1 overflow-y-auto px-1.5 py-1.5 scrollbar-thin">
+        {isCreatingFolder && (
+          <div className="flex items-center h-7 gap-1 px-1.5 rounded text-[11px] mb-1">
+            <Folder className="h-3.5 w-3.5 text-yellow-500/60 shrink-0" />
+            <input
+              ref={inputRef}
+              type="text"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCreateFolder();
+                else if (e.key === 'Escape') { setIsCreatingFolder(false); setNewFolderName('New Folder'); }
+              }}
+              onBlur={handleCreateFolder}
+              className="flex-1 bg-[#1a1b2e] border border-blue-500/50 rounded px-1.5 text-[11px] outline-none text-gray-200"
+              autoFocus
+            />
+          </div>
+        )}
+
+        {rootItems.length === 0 && !isCreatingFolder ? (
+          <div className="flex flex-col items-center gap-2 py-8 text-center">
+            <Folder className="h-7 w-7 text-gray-700" />
+            <p className="text-[11px] text-gray-700 font-medium">No files yet</p>
+            {canEdit && (
+              <p className="text-[10px] text-gray-800">Use + to create one</p>
+            )}
+          </div>
+        ) : (
+          rootItems.map(item => renderItem(item))
+        )}
+      </div>
+
+      {/* Session ID footer */}
+      {session && (
+        <div className="shrink-0 px-2.5 py-1.5 border-t border-[#1a1b2e]">
+          <p className="text-[9px] text-gray-800 font-mono truncate">{session.sessionId}</p>
+        </div>
+      )}
+    </aside>
   );
 }

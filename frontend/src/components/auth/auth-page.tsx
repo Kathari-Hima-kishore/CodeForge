@@ -1,304 +1,505 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Logo } from '@/components/logo';
 import { useAuth } from '@/contexts/auth-context';
-import { Loader2, Sparkles, Code2, Users, Zap, ArrowRight, Terminal } from 'lucide-react';
+import gsap from 'gsap';
+import { Loader2, ArrowRight, Eye, EyeOff, Zap } from 'lucide-react';
 
 type AuthMode = 'login' | 'register' | 'forgot';
 
+// ── Password strength ──────────────────────────────────────────────────────────
+function PasswordStrength({ password }: { password: string }) {
+  const checks = [
+    password.length >= 8,
+    /[A-Z]/.test(password),
+    /[a-z]/.test(password),
+    /[0-9]/.test(password),
+  ];
+  const score = checks.filter(Boolean).length;
+  const colors = ['bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-emerald-500'];
+  const labels = ['Weak', 'Fair', 'Good', 'Strong'];
+  const labelColors = ['text-red-400', 'text-orange-400', 'text-yellow-400', 'text-emerald-400'];
+  if (!password) return null;
+  return (
+    <div className="mt-2 space-y-1.5">
+      <div className="flex gap-1">
+        {[0, 1, 2, 3].map(i => (
+          <div key={i} className={`h-0.5 flex-1 rounded-full transition-all duration-300 ${i < score ? colors[score - 1] : 'bg-white/10'}`} />
+        ))}
+      </div>
+      {score > 0 && <p className={`text-[11px] ${labelColors[score - 1]}`}>{labels[score - 1]}</p>}
+    </div>
+  );
+}
+
+// ── Code snippets for the terminal showcase ────────────────────────────────────
+type Line = { text: string; indent?: number; type: 'keyword' | 'fn' | 'string' | 'comment' | 'plain' | 'num' | 'type' };
+
+const SNIPPETS: { lang: string; color: string; lines: Line[] }[] = [
+  {
+    lang: 'Python',
+    color: '#4B8BBE',
+    lines: [
+      { text: '# real-time fibonacci', type: 'comment' },
+      { text: 'def fibonacci(n: int) -> int:', type: 'plain' },
+      { text: 'if n <= ', indent: 1, type: 'keyword' },
+      { text: '    if n <= 1: return n', indent: 1, type: 'plain' },
+      { text: '    return fib(n-1) + fib(n-2)', indent: 1, type: 'plain' },
+      { text: '', type: 'plain' },
+      { text: 'for i in range(10):', type: 'plain' },
+      { text: '    print(fibonacci(i))', indent: 1, type: 'plain' },
+    ],
+  },
+  {
+    lang: 'JavaScript',
+    color: '#F7DF1E',
+    lines: [
+      { text: '// async fetch with error handling', type: 'comment' },
+      { text: 'const fetchUser = async (id) => {', type: 'plain' },
+      { text: '  try {', indent: 1, type: 'plain' },
+      { text: '    const res = await fetch(`/api/${id}`)', indent: 2, type: 'plain' },
+      { text: '    const data = await res.json()', indent: 2, type: 'plain' },
+      { text: '    return data', indent: 2, type: 'plain' },
+      { text: '  } catch (err) {', indent: 1, type: 'plain' },
+      { text: '    console.error(err.message)', indent: 2, type: 'plain' },
+      { text: '  }', indent: 1, type: 'plain' },
+      { text: '}', type: 'plain' },
+    ],
+  },
+  {
+    lang: 'Java',
+    color: '#ED8B00',
+    lines: [
+      { text: '// Generic stack implementation', type: 'comment' },
+      { text: 'public class Stack<T> {', type: 'plain' },
+      { text: '  private List<T> items = new ArrayList<>();', indent: 1, type: 'plain' },
+      { text: '', type: 'plain' },
+      { text: '  public void push(T item) {', indent: 1, type: 'plain' },
+      { text: '    items.add(item);', indent: 2, type: 'plain' },
+      { text: '  }', indent: 1, type: 'plain' },
+      { text: '', type: 'plain' },
+      { text: '  public T pop() {', indent: 1, type: 'plain' },
+      { text: '    return items.remove(items.size()-1);', indent: 2, type: 'plain' },
+      { text: '  }', indent: 1, type: 'plain' },
+      { text: '}', type: 'plain' },
+    ],
+  },
+  {
+    lang: 'C++',
+    color: '#00599C',
+    lines: [
+      { text: '// Binary search', type: 'comment' },
+      { text: 'int binarySearch(vector<int>& arr, int x) {', type: 'plain' },
+      { text: '  int lo = 0, hi = arr.size() - 1;', indent: 1, type: 'plain' },
+      { text: '  while (lo <= hi) {', indent: 1, type: 'plain' },
+      { text: '    int mid = lo + (hi - lo) / 2;', indent: 2, type: 'plain' },
+      { text: '    if (arr[mid] == x) return mid;', indent: 2, type: 'plain' },
+      { text: '    else if (arr[mid] < x) lo = mid + 1;', indent: 2, type: 'plain' },
+      { text: '    else hi = mid - 1;', indent: 2, type: 'plain' },
+      { text: '  }', indent: 1, type: 'plain' },
+      { text: '  return -1;', indent: 1, type: 'plain' },
+      { text: '}', type: 'plain' },
+    ],
+  },
+];
+
+const LANG_BADGES = ['Python', 'JavaScript', 'TypeScript', 'Java', 'C++', 'C', 'C#', 'HTML', 'CSS'];
+
+// ── Terminal left panel ────────────────────────────────────────────────────────
+function TerminalPanel() {
+  const [snippetIdx, setSnippetIdx] = useState(0);
+  const [visibleLines, setVisibleLines] = useState(0);
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const badgesRef = useRef<HTMLDivElement>(null);
+  const heroRef = useRef<HTMLDivElement>(null);
+
+  const snippet = SNIPPETS[snippetIdx];
+
+  // Cycle snippets + animate lines in
+  useEffect(() => {
+    setVisibleLines(0);
+    let line = 0;
+    const iv = setInterval(() => {
+      line++;
+      setVisibleLines(line);
+      if (line >= snippet.lines.length) clearInterval(iv);
+    }, 90);
+    return () => clearInterval(iv);
+  }, [snippetIdx, snippet.lines.length]);
+
+  // Auto-cycle every 6 seconds
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSnippetIdx(i => (i + 1) % SNIPPETS.length);
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [snippetIdx]);
+
+  // Entrance animations
+  useEffect(() => {
+    const ctx = gsap.context(() => {
+      gsap.from(heroRef.current, { y: 24, opacity: 0, duration: 0.9, ease: 'power3.out' });
+      gsap.from(terminalRef.current, { y: 32, opacity: 0, duration: 0.9, delay: 0.15, ease: 'power3.out' });
+      gsap.from(badgesRef.current?.children ?? [], {
+        y: 12, opacity: 0, duration: 0.5, stagger: 0.06, delay: 0.4, ease: 'power2.out',
+      });
+    });
+    return () => ctx.revert();
+  }, []);
+
+  return (
+    <div className="relative flex flex-col justify-between h-full px-10 py-10 overflow-hidden select-none">
+      {/* Background grid */}
+      <div
+        className="absolute inset-0 opacity-[0.025]"
+        style={{
+          backgroundImage: 'linear-gradient(rgba(255,255,255,0.3) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.3) 1px, transparent 1px)',
+          backgroundSize: '32px 32px',
+        }}
+      />
+      {/* Subtle radial glow */}
+      <div className="absolute top-[-10%] left-[-5%] w-[500px] h-[500px] rounded-full bg-violet-600/10 blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-5%] w-[400px] h-[400px] rounded-full bg-indigo-600/8 blur-[100px] pointer-events-none" />
+
+      {/* Logo */}
+      <div ref={heroRef} className="relative z-10">
+        <div className="flex items-center gap-2.5 mb-16">
+          <div className="w-8 h-8 rounded-lg bg-violet-500/15 border border-violet-500/25 flex items-center justify-center">
+            <Zap className="w-4 h-4 text-violet-400" />
+          </div>
+          <span className="font-bold text-white/80 text-sm tracking-wide">CodeForge</span>
+          <span className="ml-auto text-[10px] font-semibold bg-violet-500/15 border border-violet-500/25 text-violet-400 px-2 py-0.5 rounded-full uppercase tracking-wider">Beta</span>
+        </div>
+
+        <h2 className="text-4xl font-bold text-white leading-[1.15] tracking-tight max-w-xs">
+          Write code.<br />
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-violet-400 via-fuchsia-400 to-indigo-400">
+            Run anywhere.
+          </span><br />
+          Ship together.
+        </h2>
+        <p className="mt-4 text-white/35 text-sm leading-relaxed max-w-xs">
+          A real-time collaborative IDE for teams that move fast. Multi-language, instant execution, zero setup.
+        </p>
+      </div>
+
+      {/* Terminal window */}
+      <div ref={terminalRef} className="relative z-10 my-6 flex-1 min-h-0 flex flex-col max-h-[320px]">
+        <div className="rounded-xl border border-white/8 bg-[#0d0e18] shadow-2xl shadow-black/60 overflow-hidden flex flex-col h-full">
+          {/* Title bar */}
+          <div className="flex items-center gap-2 px-4 py-3 bg-[#0a0b14] border-b border-white/6 shrink-0">
+            <div className="flex gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-[#ff5f57]/80" />
+              <div className="w-3 h-3 rounded-full bg-[#febc2e]/80" />
+              <div className="w-3 h-3 rounded-full bg-[#28c840]/80" />
+            </div>
+            <div className="flex-1 text-center">
+              <span className="text-[11px] text-white/25 font-mono">codeforge — main.{snippet.lang === 'Python' ? 'py' : snippet.lang === 'JavaScript' ? 'js' : snippet.lang === 'Java' ? 'java' : 'cpp'}</span>
+            </div>
+            <div
+              className="px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-all duration-500"
+              style={{ color: snippet.color + 'cc', borderColor: snippet.color + '30', background: snippet.color + '12' }}
+            >
+              {snippet.lang}
+            </div>
+          </div>
+
+          {/* Code area */}
+          <div className="flex-1 p-4 font-mono text-[12.5px] leading-[1.75] overflow-hidden">
+            {snippet.lines.slice(0, visibleLines).map((line, i) => (
+              <div
+                key={`${snippetIdx}-${i}`}
+                className="flex gap-3 transition-all duration-150"
+                style={{ opacity: visibleLines > i ? 1 : 0 }}
+              >
+                <span className="text-white/15 w-4 text-right shrink-0 text-[11px]">{i + 1}</span>
+                <span
+                  className={
+                    line.type === 'comment' ? 'text-[#6a7280] italic' :
+                    'text-[#e2e8f0]/85'
+                  }
+                >
+                  {line.text}
+                </span>
+              </div>
+            ))}
+            {/* Blinking cursor */}
+            {visibleLines < snippet.lines.length && (
+              <div className="flex gap-3">
+                <span className="text-white/15 w-4 text-right shrink-0 text-[11px]">{visibleLines + 1}</span>
+                <span className="inline-block w-2 h-4 bg-violet-400/70 animate-pulse" />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Language badges + stats */}
+      <div className="relative z-10 space-y-5">
+        <div ref={badgesRef} className="flex flex-wrap gap-1.5">
+          {LANG_BADGES.map(lang => (
+            <span
+              key={lang}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-all duration-300 cursor-default ${
+                lang === snippet.lang
+                  ? 'bg-violet-500/20 border-violet-500/40 text-violet-300'
+                  : 'bg-white/4 border-white/8 text-white/30 hover:border-white/15 hover:text-white/50'
+              }`}
+            >
+              {lang}
+            </span>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-6 pt-2 border-t border-white/6">
+          <div>
+            <p className="text-xl font-bold text-white">9+</p>
+            <p className="text-white/25 text-[11px]">Languages</p>
+          </div>
+          <div className="w-px h-8 bg-white/8" />
+          <div>
+            <p className="text-xl font-bold text-white">∞</p>
+            <p className="text-white/25 text-[11px]">Sessions</p>
+          </div>
+          <div className="w-px h-8 bg-white/8" />
+          <div>
+            <p className="text-xl font-bold text-white">0ms</p>
+            <p className="text-white/25 text-[11px]">Sync delay</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main auth page ────────────────────────────────────────────────────────────
 export function AuthPage() {
   const { login, register, resetPassword, error, loading, clearError } = useAuth();
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState('');
   const [localError, setLocalError] = useState('');
+
+  const formRef = useRef<HTMLDivElement>(null);
+  const rightRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const ctx = gsap.context(() => {
+      gsap.from(rightRef.current, { x: 20, opacity: 0, duration: 0.8, delay: 0.1, ease: 'power3.out' });
+    });
+    return () => ctx.revert();
+  }, []);
+
+  // Animate form on mode switch
+  useEffect(() => {
+    if (!formRef.current) return;
+    gsap.fromTo(formRef.current,
+      { opacity: 0, y: 8 },
+      { opacity: 1, y: 0, duration: 0.3, ease: 'power2.out' }
+    );
+  }, [mode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMessage('');
     setLocalError('');
     clearError();
-
     try {
       if (mode === 'login') {
         await login(email, password);
       } else if (mode === 'register') {
-        if (password.length < 8) {
-          setLocalError('Password must be at least 8 characters');
-          return;
-        }
+        if (password.length < 8) { setLocalError('Password must be at least 8 characters'); return; }
         await register(email, password, displayName);
-      } else if (mode === 'forgot') {
+      } else {
         await resetPassword(email);
-        setMessage('Password reset email sent! Check your inbox.');
+        setMessage('Reset link sent! Check your inbox.');
       }
     } catch (err: unknown) {
-      const error = err as Error;
-      const errorMsg = error.message || '';
-      
-      if (errorMsg === 'Email is not registered') {
-        setLocalError('Email is not registered');
-      } else if (errorMsg === 'Incorrect password') {
-        setLocalError('Incorrect password');
-      } else if (errorMsg.includes('Password')) {
-        setLocalError(errorMsg);
-      } else if (errorMsg.includes('Firebase:')) {
-        const cleanMessage = errorMsg
+      const msg = (err as Error).message || '';
+      if (['Email is not registered', 'Incorrect password'].includes(msg)) {
+        setLocalError(msg);
+      } else if (msg.includes('Firebase:')) {
+        setLocalError(msg
           .replace('Firebase: ', '')
-          .replace('auth/invalid-credential', 'Incorrect password')
-          .replace('auth/wrong-password', 'Incorrect password')
-          .replace('auth/email-already-in-use', 'This email is already registered')
-          .replace('auth/weak-password', 'Password must be at least 8 characters with uppercase, lowercase, and number')
-          .replace('auth/invalid-email', 'Invalid email address');
-        setLocalError(cleanMessage);
-      } else if (!errorMsg.includes('Login failed')) {
-        setLocalError(errorMsg);
+          .replace(/\(auth\/.*?\)\.?/, '')
+          .replace('invalid-credential', 'Incorrect email or password.')
+          .replace('wrong-password', 'Incorrect password.')
+          .replace('email-already-in-use', 'Email already registered.')
+          .replace('weak-password', 'Password too weak.')
+          .replace('invalid-email', 'Invalid email address.')
+          .trim()
+        );
+      } else if (msg && !msg.includes('Login failed')) {
+        setLocalError(msg);
       }
     }
   };
 
-  const switchMode = (newMode: AuthMode) => {
-    setMode(newMode);
+  const switchMode = (m: AuthMode) => {
+    setMode(m);
     setMessage('');
     setLocalError('');
     clearError();
+    setShowPassword(false);
   };
 
-  return (
-    <div className="min-h-screen flex bg-background overflow-hidden">
-      {/* Left side - Branding */}
-      <div className="hidden lg:flex lg:w-[55%] relative overflow-hidden">
-        {/* Animated gradient background */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/20 via-background to-background" />
-        <div className="absolute inset-0 bg-grid-pattern opacity-[0.03]" />
-        
-        {/* Floating elements */}
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-3xl animate-pulse" />
-        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-accent/10 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
-        
-        <div className="relative z-10 flex flex-col justify-center items-center w-full p-16">
-          <div className="max-w-lg">
-            {/* Logo & Title */}
-            <div className="flex items-center gap-4 mb-8">
-              <div className="relative">
-                <div className="absolute inset-0 bg-primary/30 blur-xl rounded-2xl" />
-                <div className="relative bg-gradient-to-br from-primary to-purple-600 p-4 rounded-2xl shadow-lg shadow-primary/25">
-                  <Terminal className="h-10 w-10 text-white" />
-                </div>
-              </div>
-              <div>
-                <h1 className="text-4xl font-bold tracking-tight">
-                  Code<span className="text-primary">Forge</span>
-                </h1>
-                <p className="text-sm text-muted-foreground font-medium">Collaborative IDE</p>
-              </div>
-            </div>
+  const displayError = localError || error;
 
-            <h2 className="text-4xl font-bold mb-4 leading-tight">
-              Code together.{' '}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary via-purple-400 to-accent">
-                Build faster.
-              </span>
-            </h2>
-            
-            <p className="text-lg text-muted-foreground mb-10 leading-relaxed">
-              A powerful browser-based IDE for real-time collaboration. 
-              Write, run, and share code instantly with your team.
-            </p>
-          
-            {/* Feature cards */}
-            <div className="space-y-4">
-              {[
-                { icon: Code2, title: 'Multi-Language Support', desc: 'Python, JavaScript, TypeScript, C++, Java & more', color: 'from-blue-500 to-cyan-500' },
-                { icon: Users, title: 'Real-time Collaboration', desc: 'Code together with live cursors and instant sync', color: 'from-purple-500 to-pink-500' },
-                { icon: Zap, title: 'Instant Execution', desc: 'Run code directly in secure containers', color: 'from-emerald-500 to-teal-500' },
-              ].map((feature, i) => (
-                <div key={i} className="flex items-center gap-4 p-4 rounded-xl bg-card/40 border border-border/40 backdrop-blur-sm hover:bg-card/60 transition-all duration-300 group">
-                  <div className={`flex-shrink-0 w-12 h-12 rounded-lg bg-gradient-to-br ${feature.color} flex items-center justify-center shadow-lg`}>
-                    <feature.icon className="h-5 w-5 text-white" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-foreground">{feature.title}</h3>
-                    <p className="text-sm text-muted-foreground">{feature.desc}</p>
-                  </div>
-                  <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity -translate-x-2 group-hover:translate-x-0" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+  return (
+    <div className="min-h-screen flex bg-[#08090f] overflow-hidden">
+
+      {/* ── LEFT: Terminal showcase ── */}
+      <div className="hidden lg:flex lg:w-[52%] border-r border-white/[0.06] bg-[#08090f]">
+        <TerminalPanel />
       </div>
 
-      {/* Right side - Auth Form */}
-      <div className="w-full lg:w-[45%] flex items-center justify-center p-8 bg-card/30 relative">
-        <div className="absolute inset-0 bg-grid-pattern opacity-[0.02]" />
-        
-        <div className="relative z-10 w-full max-w-md">
-          {/* Mobile logo */}
-          <div className="flex items-center gap-3 mb-8 lg:hidden">
-            <div className="bg-gradient-to-br from-primary to-purple-600 p-2.5 rounded-lg">
-              <Terminal className="h-6 w-6 text-white" />
+      {/* ── RIGHT: Auth form ── */}
+      <div ref={rightRef} className="w-full lg:w-[48%] flex items-center justify-center p-8 relative bg-[#08090f]">
+
+        {/* Subtle top-right glow */}
+        <div className="absolute top-0 right-0 w-[300px] h-[300px] rounded-full bg-violet-600/5 blur-[80px] pointer-events-none" />
+
+        {/* Mobile logo */}
+        <div className="absolute top-6 left-6 flex items-center gap-2 lg:hidden">
+          <div className="w-7 h-7 rounded-lg bg-violet-500/15 border border-violet-500/25 flex items-center justify-center">
+            <Zap className="w-3.5 h-3.5 text-violet-400" />
+          </div>
+          <span className="font-bold text-white/70 text-sm">CodeForge</span>
+        </div>
+
+        <div className="relative z-10 w-full max-w-[360px]">
+
+          <div ref={formRef}>
+            {/* Header */}
+            <div className="mb-8">
+              <p className="text-[11px] font-bold text-violet-400 uppercase tracking-[0.15em] mb-2">
+                {mode === 'login' ? 'Sign In' : mode === 'register' ? 'Create Account' : 'Reset Password'}
+              </p>
+              <h1 className="text-[28px] font-bold text-white leading-tight tracking-tight">
+                {mode === 'login' && 'Welcome back'}
+                {mode === 'register' && 'Join CodeForge'}
+                {mode === 'forgot' && 'Reset your password'}
+              </h1>
+              <p className="text-white/35 text-sm mt-1.5">
+                {mode === 'login' && 'Sign in to your workspace.'}
+                {mode === 'register' && 'Start building in seconds.'}
+                {mode === 'forgot' && "We'll email you a reset link."}
+              </p>
             </div>
-            <span className="text-xl font-bold">CodeForge</span>
-          </div>
 
-          {/* Form header */}
-          <div className="mb-8">
-            <h2 className="text-2xl font-bold mb-2">
-              {mode === 'login' && 'Welcome back'}
-              {mode === 'register' && 'Get started'}
-              {mode === 'forgot' && 'Reset password'}
-            </h2>
-            <p className="text-muted-foreground">
-              {mode === 'login' && 'Enter your credentials to continue'}
-              {mode === 'register' && 'Create your account to start coding'}
-              {mode === 'forgot' && 'We\'ll send you a reset link'}
-            </p>
-          </div>
+            {/* Form */}
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {mode === 'register' && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="displayName" className="text-[13px] text-white/50 font-medium">Name</Label>
+                  <Input
+                    id="displayName"
+                    type="text"
+                    placeholder="Your name"
+                    value={displayName}
+                    onChange={e => setDisplayName(e.target.value)}
+                    required
+                    autoFocus
+                    className="h-11 bg-white/[0.04] border-white/10 text-white placeholder:text-white/20 focus:border-violet-500/60 focus:bg-white/[0.06] transition-all rounded-lg"
+                  />
+                </div>
+              )}
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {mode === 'register' && (
-              <div className="space-y-2">
-                <Label htmlFor="displayName" className="text-sm font-medium text-foreground/80">
-                  Full Name
-                </Label>
+              <div className="space-y-1.5">
+                <Label htmlFor="email" className="text-[13px] text-white/50 font-medium">Email</Label>
                 <Input
-                  id="displayName"
-                  type="text"
-                  placeholder="John Doe"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
+                  id="email"
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
                   required
-                  className="h-12 bg-background/60 border-border/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                  autoFocus={mode !== 'register'}
+                  className="h-11 bg-white/[0.04] border-white/10 text-white placeholder:text-white/20 focus:border-violet-500/60 focus:bg-white/[0.06] transition-all rounded-lg"
                 />
               </div>
-            )}
-            
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-sm font-medium text-foreground/80">
-                Email Address
-              </Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="h-12 bg-background/60 border-border/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
-              />
-            </div>
-            
-            {mode !== 'forgot' && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="password" className="text-sm font-medium text-foreground/80">
-                    Password
-                  </Label>
-                  {mode === 'login' && (
+
+              {mode !== 'forgot' && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="password" className="text-[13px] text-white/50 font-medium">Password</Label>
+                    {mode === 'login' && (
+                      <button type="button" onClick={() => switchMode('forgot')} className="text-[12px] text-white/30 hover:text-violet-400 transition-colors">
+                        Forgot password?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Input
+                      id="password"
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      required
+                      minLength={8}
+                      className="h-11 bg-white/[0.04] border-white/10 text-white placeholder:text-white/20 focus:border-violet-500/60 focus:bg-white/[0.06] transition-all rounded-lg pr-11"
+                    />
                     <button
                       type="button"
-                      onClick={() => switchMode('forgot')}
-                      className="text-xs text-primary hover:text-primary/80 transition-colors"
+                      tabIndex={-1}
+                      onClick={() => setShowPassword(v => !v)}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-white/25 hover:text-white/50 transition-colors"
                     >
-                      Forgot?
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
-                  )}
-                </div>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  minLength={8}
-                  className="h-12 bg-background/60 border-border/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
-                />
-                {mode === 'register' && (
-                  <div className="flex gap-2 text-xs text-muted-foreground">
-                    <span className={password.length >= 8 ? 'text-emerald-500' : ''}>✓ 8+</span>
-                    <span className={/[A-Z]/.test(password) ? 'text-emerald-500' : ''}>✓ A-Z</span>
-                    <span className={/[a-z]/.test(password) ? 'text-emerald-500' : ''}>✓ a-z</span>
-                    <span className={/[0-9]/.test(password) ? 'text-emerald-500' : ''}>✓ 0-9</span>
                   </div>
-                )}
-              </div>
-            )}
-
-            {(localError || error) && (
-              <div className="p-3.5 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm font-medium">
-                {localError || error}
-              </div>
-            )}
-            
-            {message && (
-              <div className="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 text-sm font-medium">
-                {message}
-              </div>
-            )}
-
-            <Button 
-              type="submit" 
-              className="w-full h-12 bg-gradient-to-r from-primary to-purple-600 hover:from-primary/90 hover:to-purple-600/90 text-white font-semibold shadow-lg shadow-primary/25 hover:shadow-primary/40 transition-all duration-200 group" 
-              disabled={loading}
-            >
-              {loading ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Processing...
-                </span>
-              ) : (
-                <span className="flex items-center gap-2">
-                  {mode === 'login' && 'Sign In'}
-                  {mode === 'register' && 'Create Account'}
-                  {mode === 'forgot' && 'Send Reset Link'}
-                  <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                </span>
+                  {mode === 'register' && <PasswordStrength password={password} />}
+                </div>
               )}
-            </Button>
-          </form>
 
-          <div className="mt-8 pt-6 border-t border-border/30">
-            {mode === 'login' && (
-              <p className="text-center text-sm text-muted-foreground">
-                Don&apos;t have an account?{' '}
-                <button
-                  onClick={() => switchMode('register')}
-                  className="text-primary hover:text-primary/80 font-semibold transition-colors"
-                >
-                  Sign up free
-                </button>
-              </p>
-            )}
-            {mode === 'register' && (
-              <p className="text-center text-sm text-muted-foreground">
-                Already have an account?{' '}
-                <button
-                  onClick={() => switchMode('login')}
-                  className="text-primary hover:text-primary/80 font-semibold transition-colors"
-                >
-                  Sign in
-                </button>
-              </p>
-            )}
-            {mode === 'forgot' && (
-              <p className="text-center text-sm text-muted-foreground">
-                Remember your password?{' '}
-                <button
-                  onClick={() => switchMode('login')}
-                  className="text-primary hover:text-primary/80 font-semibold transition-colors"
-                >
-                  Sign in
-                </button>
-              </p>
-            )}
+              {displayError && (
+                <div className="py-2.5 px-3 rounded-lg bg-red-500/8 border border-red-500/20 text-red-400 text-[13px]">
+                  {displayError}
+                </div>
+              )}
+              {message && (
+                <div className="py-2.5 px-3 rounded-lg bg-emerald-500/8 border border-emerald-500/20 text-emerald-400 text-[13px]">
+                  {message}
+                </div>
+              )}
+
+              <Button
+                type="submit"
+                disabled={loading}
+                className="w-full h-11 mt-2 rounded-lg bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white font-semibold text-[14px] shadow-lg shadow-violet-600/20 transition-all duration-150 group"
+              >
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <span className="flex items-center justify-center gap-2">
+                    {mode === 'login' && 'Continue'}
+                    {mode === 'register' && 'Create account'}
+                    {mode === 'forgot' && 'Send reset link'}
+                    <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
+                  </span>
+                )}
+              </Button>
+            </form>
+
+            {/* Switch mode */}
+            <p className="mt-6 text-center text-[13px] text-white/30">
+              {mode === 'login' && (
+                <>No account?{' '}<button onClick={() => switchMode('register')} className="text-violet-400 hover:text-violet-300 font-medium transition-colors">Sign up free</button></>
+              )}
+              {mode === 'register' && (
+                <>Already a member?{' '}<button onClick={() => switchMode('login')} className="text-violet-400 hover:text-violet-300 font-medium transition-colors">Sign in</button></>
+              )}
+              {mode === 'forgot' && (
+                <>Remember it?{' '}<button onClick={() => switchMode('login')} className="text-violet-400 hover:text-violet-300 font-medium transition-colors">Back to sign in</button></>
+              )}
+            </p>
           </div>
         </div>
       </div>

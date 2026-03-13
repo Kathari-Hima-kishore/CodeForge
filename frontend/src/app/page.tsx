@@ -5,46 +5,36 @@ import { useSession } from "@/contexts/session-context";
 import { AuthPage } from "@/components/auth/auth-page";
 import { SessionDialog } from "@/components/session/session-dialog";
 import { MainLayout } from "@/components/ide/main-layout";
-import { Loader2 } from "lucide-react";
+import { Loader2, Terminal } from "lucide-react";
+
+function FullScreenLoader({ message }: { message: string }) {
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-background">
+      <div className="absolute inset-0 bg-grid-pattern opacity-[0.03]" />
+      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-96 h-96 bg-primary/5 rounded-full blur-3xl" />
+      <div className="relative z-10 flex flex-col items-center gap-5">
+        <div className="relative">
+          <div className="absolute inset-0 bg-primary/20 blur-xl rounded-2xl" />
+          <div className="relative bg-gradient-to-br from-primary to-purple-600 p-3.5 rounded-2xl shadow-xl shadow-primary/20">
+            <Terminal className="h-8 w-8 text-white" />
+          </div>
+        </div>
+        <div className="flex flex-col items-center gap-2">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">{message}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function HomePage() {
   const { user, loading: authLoading } = useAuth();
   const { session, isConnecting } = useSession();
 
-  // Show loading spinner while checking auth state
-  if (authLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-12 w-12 animate-spin text-primary" />
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Show auth page if not logged in
-  if (!user) {
-    return <AuthPage />;
-  }
-
-  // Show session dialog if logged in but no active session
-  if (!session) {
-    return <SessionDialog />;
-  }
-
-  // Show connecting indicator when joining session
-  if (isConnecting) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-12 w-12 animate-spin text-primary" />
-          <p className="text-muted-foreground">Connecting to session...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Show the main IDE
+  if (authLoading) return <FullScreenLoader message="Authenticating..." />;
+  if (!user) return <AuthPage />;
+  if (isConnecting) return <FullScreenLoader message="Connecting to session..." />;
+  if (!session) return <SessionDialog />;
   return <MainLayout />;
 }

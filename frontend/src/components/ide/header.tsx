@@ -357,43 +357,43 @@ export function IdeHeader() {
 
   return (
     <>
-      <header className="flex h-14 items-center gap-4 border-b border-border/50 bg-card/50 backdrop-blur-sm px-4 lg:h-16 lg:px-6">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <Logo />
-          </div>
+      <header className="flex h-[48px] items-center gap-3 border-b border-[#1a1b2e] bg-[#0a0b14]/95 backdrop-blur-md px-4 shrink-0 z-10">
+        {/* Left: Logo + session info */}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <Logo />
 
           {session && (
             <>
-              <div className="w-px h-8 bg-border/50 mx-2"></div>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-                  <span className="text-sm font-semibold">{session.name}</span>
-                </div>
-                <span className="text-xs bg-primary/20 text-primary px-2.5 py-1 rounded-full font-medium capitalize border border-primary/20">
+              <div className="w-px h-5 bg-[#1a1b2e]" />
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                <span className="text-[13px] font-semibold text-foreground/90 truncate max-w-[160px]">
+                  {session.name}
+                </span>
+                <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-bold capitalize border border-primary/15 tracking-wide shrink-0">
                   {session.role.replace('-', ' ')}
                 </span>
-                <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  <Users className="h-3.5 w-3.5" />
-                  {participantCount} online
+                <span className="text-[11px] text-muted-foreground/50 flex items-center gap-1 bg-[#1a1b2e] px-1.5 py-0.5 rounded-full border border-[#252640] shrink-0">
+                  <Users className="h-2.5 w-2.5" />
+                  {participantCount}
                 </span>
               </div>
             </>
           )}
         </div>
 
-        <div className="flex flex-1 items-center justify-end gap-3">
+        {/* Right: Actions */}
+        <div className="flex items-center gap-2 shrink-0">
           {session && (
             <>
               <Button
                 variant="outline"
                 size="sm"
-                className="flex items-center gap-2 border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary"
+                className="flex items-center gap-1.5 h-7 px-3 text-[12px] border-primary/20 bg-primary/8 hover:bg-primary/15 text-primary font-medium"
                 onClick={() => setShareOpen(true)}
               >
-                <Share2 className="h-4 w-4" />
-                Share Session
+                <Share2 className="h-3.5 w-3.5" />
+                Share
               </Button>
 
               <DropdownMenu>
@@ -401,29 +401,27 @@ export function IdeHeader() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="flex items-center gap-2 border-border/50 hover:bg-secondary/50"
+                    className="flex items-center gap-1.5 h-7 px-3 text-[12px] border-[#252640] bg-[#1a1b2e]/50 hover:bg-[#1a1b2e] text-muted-foreground hover:text-foreground font-medium"
                   >
-                    <Download className="h-4 w-4" />
+                    <Download className="h-3.5 w-3.5" />
                     Export
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-64">
-                  <DropdownMenuItem onClick={handleBuildContainerImage} className="flex flex-col items-start gap-1 p-3">
+                <DropdownMenuContent align="end" className="w-60">
+                  <DropdownMenuItem onClick={handleBuildContainerImage} className="flex flex-col items-start gap-0.5 p-3 cursor-pointer">
                     <div className="flex items-center gap-2">
-                      <Package className="h-4 w-4 text-primary" />
-                      <span className="font-semibold">Build Container Image</span>
+                      <Package className="h-3.5 w-3.5 text-primary" />
+                      <span className="font-semibold text-[13px]">Build Container Image</span>
                     </div>
-                    <span className="text-xs text-muted-foreground ml-6">Auto-detects language & framework</span>
-                    <span className="text-xs text-muted-foreground ml-6">Result: Ready-to-run Docker image</span>
+                    <span className="text-[11px] text-muted-foreground ml-[22px]">Auto-detects language & framework</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleExportSourceCode} className="flex flex-col items-start gap-1 p-3">
+                  <DropdownMenuItem onClick={handleExportSourceCode} className="flex flex-col items-start gap-0.5 p-3 cursor-pointer">
                     <div className="flex items-center gap-2">
-                      <FileArchive className="h-4 w-4 text-accent" />
-                      <span className="font-semibold">Export Source Code</span>
+                      <FileArchive className="h-3.5 w-3.5 text-accent" />
+                      <span className="font-semibold text-[13px]">Export Source Code</span>
                     </div>
-                    <span className="text-xs text-muted-foreground ml-6">Packages: Code only</span>
-                    <span className="text-xs text-muted-foreground ml-6">Result: ZIP file</span>
+                    <span className="text-[11px] text-muted-foreground ml-[22px]">Downloads as .zip archive</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -431,10 +429,10 @@ export function IdeHeader() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                className="h-7 px-2.5 text-[12px] text-muted-foreground/50 hover:text-destructive hover:bg-destructive/8 font-medium"
                 onClick={handleLeaveSession}
               >
-                <LogOut className="h-4 w-4 mr-2" />
+                <LogOut className="h-3.5 w-3.5 mr-1.5" />
                 Leave
               </Button>
             </>
@@ -442,26 +440,26 @@ export function IdeHeader() {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full">
-                <Avatar className="h-8 w-8">
+              <Button variant="ghost" size="icon" className="rounded-full h-7 w-7">
+                <Avatar className="h-7 w-7">
                   <AvatarImage src={user?.photoURL || undefined} alt="User Avatar" />
-                  <AvatarFallback className="bg-primary text-primary-foreground">
+                  <AvatarFallback className="bg-gradient-to-br from-primary to-purple-600 text-white text-[11px] font-bold">
                     {user?.displayName?.charAt(0) || user?.email?.charAt(0) || 'U'}
                   </AvatarFallback>
                 </Avatar>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="w-52">
               <DropdownMenuLabel>
-                <div className="flex flex-col">
-                  <span>{user?.displayName || 'User'}</span>
-                  <span className="text-xs font-normal text-muted-foreground">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[13px] font-semibold">{user?.displayName || 'User'}</span>
+                  <span className="text-[11px] font-normal text-muted-foreground truncate">
                     {user?.email}
                   </span>
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout} className="text-destructive">
+              <DropdownMenuItem onClick={handleLogout} className="text-destructive text-[13px]">
                 Logout
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -473,122 +471,111 @@ export function IdeHeader() {
       <Dialog open={shareOpen} onOpenChange={handleShareDialogChange}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-xl">Share Session</DialogTitle>
+            <DialogTitle className="text-lg">Share Session</DialogTitle>
             <DialogDescription>
               Share this code with others to let them join your session.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center gap-2 mt-2">
             <Input
               value={session?.sessionId || ''}
               readOnly
-              className="font-mono text-lg tracking-widest text-center bg-background/50 border-border/50"
+              className="font-mono text-xl tracking-[0.3em] text-center bg-secondary/30 border-border/40 h-12"
             />
             <Button
               type="button"
               size="icon"
+              className="h-12 w-12 shrink-0"
               onClick={handleCopySessionId}
-              className={copied ? 'bg-accent hover:bg-accent' : ''}
+              variant={copied ? 'default' : 'outline'}
             >
-              {copied ? (
-                <Check className="h-4 w-4" />
-              ) : (
-                <Copy className="h-4 w-4" />
-              )}
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
             </Button>
           </div>
           {copied && (
-            <p className="text-sm text-accent text-center">Copied to clipboard!</p>
+            <p className="text-[12px] text-emerald-500 text-center">Copied to clipboard!</p>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* Docker Not Installed Alert Dialog */}
+      {/* Docker Not Installed Dialog */}
       <Dialog open={dockerCheckOpen} onOpenChange={handleDockerCheckDialogChange}>
-        <DialogContent className="sm:max-w-md border-destructive/50 bg-background/95 backdrop-blur-md">
+        <DialogContent className="sm:max-w-md border-destructive/30">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle className="h-5 w-5" />
+            <DialogTitle className="flex items-center gap-2 text-destructive text-base">
+              <AlertTriangle className="h-4 w-4" />
               Docker Not Found
             </DialogTitle>
-            <DialogDescription className="text-base">
-              Docker is not installed on this system. To build container images, please install Docker first.
+            <DialogDescription>
+              Docker is not installed on this system. Please install Docker to build container images.
             </DialogDescription>
           </DialogHeader>
-          <div className="mt-4 p-4 rounded-lg bg-destructive/10 border border-destructive/30">
-            <p className="text-sm text-destructive font-medium">Installation Steps:</p>
-            <ol className="mt-2 text-sm text-muted-foreground list-decimal list-inside space-y-1">
+          <div className="mt-2 p-3.5 rounded-lg bg-destructive/8 border border-destructive/20">
+            <p className="text-[12px] text-destructive font-semibold mb-1.5">Installation Steps:</p>
+            <ol className="text-[12px] text-muted-foreground list-decimal list-inside space-y-1">
               <li>Download Docker Desktop from docker.com</li>
               <li>Run the installer and follow prompts</li>
               <li>Start Docker Desktop application</li>
               <li>Restart your IDE session</li>
             </ol>
           </div>
-          <div className="mt-4 flex justify-end">
-            <Button onClick={() => { setDockerCheckOpen(false); resetBodyPointerEvents(); }} variant="default">
+          <div className="mt-2 flex justify-end">
+            <Button onClick={() => { setDockerCheckOpen(false); resetBodyPointerEvents(); }} size="sm">
               Got it
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Deploy Container Dialog - non-modal to avoid pointer-events lock */}
+      {/* Deploy Container Dialog */}
       {deployOpen && (
         <div className="fixed inset-0 z-50">
-          <div className="fixed inset-0 bg-black/80" onClick={() => !deploying && closeDeployDialog()} />
+          <div className="fixed inset-0 bg-black/70" onClick={() => !deploying && closeDeployDialog()} />
           <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md">
-            <div className="bg-background border border-border rounded-lg shadow-lg p-6">
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2 text-lg font-semibold">
-                  <Package className="h-5 w-5" />
+            <div className="bg-background border border-border/50 rounded-xl shadow-2xl p-5">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2 text-base font-semibold">
+                  <Package className="h-4 w-4 text-primary" />
                   Build & Deploy Container
                 </div>
                 {!deploying && (
-                  <button onClick={closeDeployDialog} className="text-muted-foreground hover:text-foreground rounded-sm opacity-70 hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={closeDeployDialog}
+                    className="text-muted-foreground/50 hover:text-foreground rounded p-1 transition-colors"
+                  >
                     <X className="h-4 w-4" />
                   </button>
                 )}
               </div>
-              <p className="text-sm text-muted-foreground mb-4">
+              <p className="text-[12px] text-muted-foreground mb-4">
                 Choose how you want to deploy your container image.
               </p>
 
               <div className="space-y-4 relative">
                 <div className="space-y-2">
-                  <Label>Deployment Option</Label>
+                  <Label className="text-xs font-medium text-muted-foreground">Deployment Option</Label>
                   <div className="grid grid-cols-3 gap-2">
-                    <Button
-                      variant={deployAction === 'download' ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => setDeployAction('download')}
-                      className="flex flex-col items-center gap-1 h-auto py-3"
-                    >
-                      <Download className="h-5 w-5" />
-                      <span className="text-xs">Save .tar</span>
-                    </Button>
-                    <Button
-                      variant={deployAction === 'dockerhub' ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => setDeployAction('dockerhub')}
-                      className="flex flex-col items-center gap-1 h-auto py-3"
-                    >
-                      <Upload className="h-5 w-5" />
-                      <span className="text-xs">Docker Hub</span>
-                    </Button>
-                    <Button
-                      variant={deployAction === 'cloud' ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => setDeployAction('cloud')}
-                      className="flex flex-col items-center gap-1 h-auto py-3"
-                    >
-                      <Cloud className="h-5 w-5" />
-                      <span className="text-xs">Cloud</span>
-                    </Button>
+                    {[
+                      { id: 'download', icon: Download, label: 'Save .tar' },
+                      { id: 'dockerhub', icon: Upload, label: 'Docker Hub' },
+                      { id: 'cloud', icon: Cloud, label: 'Cloud' },
+                    ].map(({ id, icon: Icon, label }) => (
+                      <Button
+                        key={id}
+                        variant={deployAction === id ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setDeployAction(id as typeof deployAction)}
+                        className="flex flex-col items-center gap-1 h-auto py-2.5 text-[11px]"
+                      >
+                        <Icon className="h-4 w-4" />
+                        {label}
+                      </Button>
+                    ))}
                   </div>
                 </div>
 
                 {deployAction === 'dockerhub' && (
-                  <div className="space-y-3 p-3 rounded-lg bg-muted/50">
+                  <div className="space-y-3 p-3 rounded-lg bg-secondary/30 border border-border/30">
                     <div className="space-y-1">
                       <Label htmlFor="dh-user" className="text-xs">Docker Hub Username or Email</Label>
                       <Input
@@ -596,7 +583,7 @@ export function IdeHeader() {
                         value={dockerHubUsername}
                         onChange={(e) => setDockerHubUsername(e.target.value)}
                         placeholder="your-username (not email)"
-                        title="Enter your Docker Hub username, not email. Find it at https://hub.docker.com/settings/general"
+                        className="h-9 text-sm"
                       />
                     </div>
                     <div className="space-y-1">
@@ -607,6 +594,7 @@ export function IdeHeader() {
                         value={dockerHubPassword}
                         onChange={(e) => setDockerHubPassword(e.target.value)}
                         placeholder="••••••••"
+                        className="h-9 text-sm"
                       />
                     </div>
 
@@ -615,11 +603,11 @@ export function IdeHeader() {
                       size="sm"
                       onClick={fetchDockerHubRepos}
                       disabled={!dockerHubUsername || !dockerHubPassword || isLoadingDockerHubRepos}
-                      className="w-full"
+                      className="w-full h-8 text-xs"
                     >
                       {isLoadingDockerHubRepos ? (
                         <>
-                          <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin mr-2" />
+                          <div className="w-3.5 h-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin mr-2" />
                           Fetching repositories...
                         </>
                       ) : (
@@ -666,39 +654,37 @@ export function IdeHeader() {
                             setSelectedDockerHubRepo('');
                           }}
                           placeholder={session?.name || 'my-repo'}
+                          className="h-9 text-sm"
                         />
                         {dockerHubReposError && (
-                          <p className="text-xs text-destructive">{dockerHubReposError}</p>
+                          <p className="text-[11px] text-destructive">{dockerHubReposError}</p>
                         )}
                       </div>
                     )}
-
                   </div>
                 )}
 
                 {deployAction === 'cloud' && (
-                  <div className="space-y-3 p-3 rounded-lg bg-muted/50">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Cloud Provider</Label>
-                      <div className="grid grid-cols-2 gap-2">
-                        {['aws', 'gcp', 'azure', 'kubernetes'].map((provider) => (
-                          <Button
-                            key={provider}
-                            variant={cloudProvider === provider ? 'default' : 'outline'}
-                            size="sm"
-                            onClick={() => setCloudProvider(provider)}
-                            className="capitalize"
-                          >
-                            {provider}
-                          </Button>
-                        ))}
-                      </div>
+                  <div className="space-y-2 p-3 rounded-lg bg-secondary/30 border border-border/30">
+                    <Label className="text-xs font-medium text-muted-foreground">Cloud Provider</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {['aws', 'gcp', 'azure', 'kubernetes'].map((provider) => (
+                        <Button
+                          key={provider}
+                          variant={cloudProvider === provider ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => setCloudProvider(provider)}
+                          className="capitalize text-xs h-8"
+                        >
+                          {provider}
+                        </Button>
+                      ))}
                     </div>
                   </div>
                 )}
 
                 {deployAction === 'download' && (
-                  <div className="flex items-center gap-2 p-3 rounded-lg bg-muted/50">
+                  <div className="flex items-center gap-2 p-3 rounded-lg bg-secondary/30 border border-border/30">
                     <input
                       type="checkbox"
                       id="autoImport"
@@ -706,26 +692,26 @@ export function IdeHeader() {
                       onChange={(e) => setAutoImport(e.target.checked)}
                       className="w-4 h-4"
                     />
-                    <Label htmlFor="autoImport" className="text-sm cursor-pointer">
+                    <Label htmlFor="autoImport" className="text-[13px] cursor-pointer font-medium">
                       Auto-import to Docker Desktop
                     </Label>
                   </div>
                 )}
 
                 <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={closeDeployDialog} disabled={deploying}>
+                  <Button variant="outline" size="sm" onClick={closeDeployDialog} disabled={deploying} className="h-8 text-xs">
                     Cancel
                   </Button>
-                  <Button onClick={handleDeploy} disabled={deploying}>
+                  <Button size="sm" onClick={handleDeploy} disabled={deploying} className="h-8 text-xs">
                     {deploying ? 'Building...' : deployAction === 'download' ? 'Build & Download' : 'Build & Deploy'}
                   </Button>
                 </div>
 
                 {deploying && (
-                  <div className="absolute inset-0 bg-background/80 flex items-center justify-center z-50 rounded-lg">
+                  <div className="absolute inset-0 bg-background/85 flex items-center justify-center z-50 rounded-lg backdrop-blur-[2px]">
                     <div className="flex flex-col items-center gap-3">
-                      <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                      <p className="text-sm text-muted-foreground">Building container image...</p>
+                      <div className="w-7 h-7 border-[3px] border-primary border-t-transparent rounded-full animate-spin" />
+                      <p className="text-[12px] text-muted-foreground">Building container image…</p>
                     </div>
                   </div>
                 )}

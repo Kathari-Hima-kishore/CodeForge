@@ -6,6 +6,7 @@ import { FileExplorer } from '@/components/ide/file-explorer';
 import { CodeEditorPanel } from '@/components/ide/code-editor-panel';
 import { CollaborationPanel } from '@/components/ide/collaboration-panel';
 import { BottomPanel } from '@/components/ide/bottom-panel';
+import { LanguageSupportChecker } from '@/components/ide/language-support-checker';
 
 function ResizeHandle({ onResize, direction = 'horizontal' }: {
   onResize: (delta: number) => void;
@@ -88,6 +89,7 @@ export function MainLayout() {
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground font-body">
       <IdeHeader />
+      <LanguageSupportChecker />
       <div className="flex flex-1 overflow-hidden">
         <div style={{ width: getFilesWidth() }} className="h-full flex-shrink-0">
           <FileExplorer isCollapsed={filesCollapsed} onCollapse={setFilesCollapsed} />

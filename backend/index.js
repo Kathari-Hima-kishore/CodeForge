@@ -171,7 +171,7 @@ const langConfig = {
   "python": { ext: ".py", cmd: "python" },
   "javascript": { ext: ".js", cmd: "node" },
   "typescript": { ext: ".ts", cmd: "npx", args: ["ts-node"] },
-  "java": { ext: ".java", cmd: "java" },
+  "java": { ext: ".java", compiler: "javac", out: "Main", cmd: "java" },
   "cpp": { ext: ".cpp", compiler: "g++", out: "out" },
   "c": { ext: ".c", compiler: "gcc", out: "out" },
   "html": { ext: ".html", type: "browser" },
@@ -217,16 +217,30 @@ async function executeCode(language, code, stdin = "", projectFiles = {}) {
     console.log('⚠️ executeCode: No project files received');
   }
 
-  const fileName = lang === "java" ? "Main.java" : `main${config.ext}`;
+  // For Java: filename must match the public class name
+  let javaClassName = 'Main';
+  if (lang === 'java') {
+    const classMatch = code.match(/public\s+class\s+(\w+)/);
+    if (classMatch) javaClassName = classMatch[1];
+  }
+
+  const fileName = lang === "java" ? `${javaClassName}.java` : `main${config.ext}`;
   const filePath = path.join(tmpDir, fileName);
 
   try {
     fs.writeFileSync(filePath, code);
     const startTime = Date.now();
 
-    // Handle compilation for C/C++
+    // Handle compilation for C/C++/Java
     if (config.compiler) {
-      const compileArgs = ["-o", config.out, filePath];
+      let compileArgs;
+      if (lang === 'java') {
+        // Java: javac ClassName.java (no -o flag)
+        compileArgs = [filePath];
+      } else {
+        // C/C++: gcc/g++ -o out main.c
+        compileArgs = ["-o", config.out, filePath];
+      }
       await new Promise((resolve, reject) => {
         const compilerProcess = spawn(config.compiler, compileArgs, { cwd: tmpDir });
         let errOut = "";
@@ -235,14 +249,24 @@ async function executeCode(language, code, stdin = "", projectFiles = {}) {
           if (code !== 0) reject({ stdout: "", stderr: errOut, exit_code: code });
           else resolve();
         });
+        compilerProcess.on('error', (err) => {
+          reject({ stdout: "", stderr: `Failed to start compiler: ${err.message}`, exit_code: 1 });
+        });
       });
     }
 
     // Prepare execution command
     let cmd, args;
     if (config.compiler) {
-      cmd = process.platform === 'win32' ? path.join(tmpDir, `${config.out}.exe`) : path.join(tmpDir, `./${config.out}`);
-      args = [];
+      // For C/C++: run compiled executable
+      // For Java: run java command with extracted class name
+      if (lang === 'java') {
+        cmd = 'java';
+        args = ['-cp', '.', javaClassName];
+      } else {
+        cmd = process.platform === 'win32' ? path.join(tmpDir, `${config.out}.exe`) : path.join(tmpDir, `./${config.out}`);
+        args = [];
+      }
     } else if (config.args) {
       cmd = config.cmd;
       args = [...config.args, filePath];
@@ -296,8 +320,8 @@ async function executeCode(language, code, stdin = "", projectFiles = {}) {
 
       if (stdin) {
         child.stdin.write(stdin);
-        child.stdin.end();
       }
+      child.stdin.end();
 
       child.on('close', (code, signal) => {
         if (isDone) return;
@@ -378,6 +402,7 @@ class SessionData {
     this.host_uid = hostUid;
     this.host_sid = null;
     this.created_at = new Date().toISOString();
+    this.created_at_ms = Date.now();
     this.participants = {};
     this.files = {};
     this.messages = [];
@@ -435,7 +460,7 @@ class SessionData {
 // Save session to Firestore
 async function saveSessionToFirestore(session) {
   if (!db || !session) return;
-  
+
   try {
     const sessionData = {
       sessionId: session.id,
@@ -446,7 +471,7 @@ async function saveSessionToFirestore(session) {
       files: Object.values(session.files),
       messages: session.messages,
       isActive: session.is_active,
-      createdAt: session.created_at
+      createdAt: session.created_at_ms || new Date(session.created_at).getTime()
     };
     
     await db.collection("sessions").doc(session.id).set(sessionData);
@@ -490,8 +515,13 @@ io.on('connection', (socket) => {
         io.to(sessionId).emit("user_left", { user_uid: userUid, name: participant.name });
 
         if (userUid === session.host_uid) {
-          io.to(sessionId).emit("session_ended", { reason: "Host disconnected" });
+          // Host disconnected — keep session alive in Firestore so it can be rejoined.
+          // Only delete from in-memory map; resurrection happens via join_session.
           delete sessions[sessionId];
+        } else {
+          saveSessionToFirestore(session).catch(e =>
+            console.error(`Failed to sync session ${sessionId} on participant leave:`, e)
+          );
         }
       }
     }
@@ -594,18 +624,21 @@ io.on('connection', (socket) => {
     }
 
     const session = sessions[sessionId];
-    const participant = session.addParticipant(userData.uid, userData.name, sid, "editor");
+    // Preserve existing role; host always stays host; new joiners default to editor
+    const existingRole = session.participants[userData.uid]?.role;
+    const role = existingRole || (userData.uid === session.host_uid ? 'host' : 'editor');
+    const participant = session.addParticipant(userData.uid, userData.name, sid, role);
 
     userData.session_id = sessionId;
     socket.join(sessionId);
 
-    // Save session to Firestore (with new participant)
+    // Save session to Firestore (with updated socket id for participant)
     await saveSessionToFirestore(session);
 
     socket.to(sessionId).emit("user_joined", {
       user_uid: userData.uid,
       name: userData.name,
-      role: "editor",
+      role: role,
       color: participant.color
     });
 
@@ -636,6 +669,10 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Per-socket state for streaming code execution
+  let codeProcess = null;
+  let codeTmpDir = null;
+
   socket.on('run_code', async (data, callback) => {
     const userData = connectedUsers[sid];
     const userName = userData ? userData.name : "Unknown";
@@ -646,33 +683,163 @@ io.on('connection', (socket) => {
 
     console.log(`▶️ run_code: ${language} for ${userName}`);
 
+    // Kill any existing code execution for this socket
+    if (codeProcess) {
+      try { killProcessTree(codeProcess); } catch { }
+      codeProcess = null;
+    }
+    if (codeTmpDir) {
+      try { fs.rmSync(codeTmpDir, { recursive: true, force: true }); } catch { }
+      codeTmpDir = null;
+    }
+
     try {
-      const result = await executeCode(language, code, "", data.projectFiles || {});
-      result.executed_by = userName;
-
-      // Broadcast to room so others see the execution
-      if (sessionId && sessionId !== "standalone") {
-        socket.to(sessionId).emit("execution_result", result);
+      const config = langConfig[language];
+      if (!config) {
+        return callback ? callback({ error: `Unsupported language: ${language}` }) : null;
       }
 
-      // Instead of emitting an event back, use the callback acknowledgement
-      if (typeof callback === "function") {
-        callback(result);
+      // HTML/CSS can't run on the server
+      if (config.type === 'browser') {
+        return callback
+          ? callback({ error: `${language.toUpperCase()} runs in the browser — use the Preview tab instead.` })
+          : null;
+      }
+
+      const tmpDir = path.join(os.tmpdir(), `codeforge-${Date.now()}-${sid.slice(0, 8)}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      codeTmpDir = tmpDir;
+
+      // Write project files
+      if (data.projectFiles && typeof data.projectFiles === 'object') {
+        for (const [fileName, content] of Object.entries(data.projectFiles)) {
+          const filePath = path.join(tmpDir, fileName);
+          const fileDir = path.dirname(filePath);
+          if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
+          fs.writeFileSync(filePath, String(content || ''));
+        }
+      }
+
+      // Java: filename must match the public class name
+      let javaClassName = 'Main';
+      if (language === 'java') {
+        const classMatch = code.match(/public\s+class\s+(\w+)/);
+        if (classMatch) javaClassName = classMatch[1];
+      }
+
+      const fileName = language === 'java' ? `${javaClassName}.java` : `main${config.ext}`;
+      const filePath = path.join(tmpDir, fileName);
+      fs.writeFileSync(filePath, code);
+
+      // Compile if needed
+      if (config.compiler) {
+        const compileArgs = language === 'java'
+          ? [filePath]
+          : ['-o', config.out, filePath];
+
+        await new Promise((resolve, reject) => {
+          const compilerProcess = spawn(config.compiler, compileArgs, { cwd: tmpDir });
+          let errOut = '';
+          compilerProcess.stderr.on('data', d => errOut += d);
+          compilerProcess.on('close', code => {
+            if (code !== 0) reject({ stderr: errOut, exit_code: code });
+            else resolve();
+          });
+          compilerProcess.on('error', err => {
+            reject({ stderr: `Failed to start compiler: ${err.message}`, exit_code: 1 });
+          });
+        }).catch(compileErr => {
+          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+          codeTmpDir = null;
+          const msg = compileErr.stderr || 'Compilation failed';
+          if (callback) callback({ error: msg });
+          else socket.emit('execution_exit', { code: 1, error: msg });
+          throw { handled: true }; // break out of outer try
+        });
+      }
+
+      // Build run command
+      let cmd, args;
+      if (config.compiler) {
+        if (language === 'java') {
+          cmd = 'java'; args = ['-cp', '.', javaClassName];
+        } else {
+          cmd = process.platform === 'win32'
+            ? path.join(tmpDir, `${config.out}.exe`)
+            : path.join(tmpDir, `./${config.out}`);
+          args = [];
+        }
+      } else if (config.args) {
+        cmd = config.cmd; args = [...config.args, filePath];
       } else {
-        socket.emit("execution_result", result);
-      }
-    } catch (e) {
-      const errorResult = { error: e.message || "Execution error", executed_by: userName };
-
-      if (sessionId && sessionId !== "standalone") {
-        socket.to(sessionId).emit("execution_result", errorResult);
+        cmd = config.cmd;
+        if (cmd === 'python' && process.platform !== 'win32') cmd = 'python3';
+        args = [filePath];
       }
 
-      if (typeof callback === "function") {
-        callback(errorResult);
-      } else {
-        socket.emit("execution_result", errorResult);
-      }
+      const startTime = Date.now();
+      const child = spawn(cmd, args, { cwd: tmpDir, detached: process.platform !== 'win32' });
+      codeProcess = child;
+
+      // Acknowledge: compilation passed, streaming starting
+      if (typeof callback === 'function') callback({ streaming: true });
+
+      child.stdout.on('data', d => {
+        socket.emit('execution_output', { output: d.toString() });
+        if (sessionId && sessionId !== 'standalone') {
+          socket.to(sessionId).emit('execution_output', { output: d.toString(), executed_by: userName });
+        }
+      });
+
+      child.stderr.on('data', d => {
+        socket.emit('execution_output', { output: d.toString(), isError: true });
+      });
+
+      child.on('close', exitCode => {
+        codeProcess = null;
+        const executionTime = ((Date.now() - startTime) / 1000).toFixed(3);
+        socket.emit('execution_exit', { code: exitCode, execution_time: parseFloat(executionTime) });
+        setTimeout(() => {
+          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+          if (codeTmpDir === tmpDir) codeTmpDir = null;
+        }, 2000);
+      });
+
+      child.on('error', err => {
+        codeProcess = null;
+        socket.emit('execution_exit', { code: 1, error: err.message });
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+        if (codeTmpDir === tmpDir) codeTmpDir = null;
+      });
+
+    } catch (err) {
+      if (err && err.handled) return; // already reported via callback
+      console.error('run_code error:', err);
+      const msg = err instanceof Error ? err.message : 'Internal execution error';
+      if (typeof callback === 'function') callback({ error: msg });
+      else socket.emit('execution_exit', { code: 1, error: msg });
+    }
+  });
+
+  // Send input to the running code process
+  socket.on('execution_input', (data) => {
+    if (codeProcess && data.input !== undefined) {
+      codeProcess.stdin.write(data.input + '\n');
+    }
+  });
+
+  // Kill the running code process
+  socket.on('execution_kill', () => {
+    if (codeProcess) {
+      try { killProcessTree(codeProcess); } catch { }
+      codeProcess = null;
+      socket.emit('execution_exit', { code: null, killed: true });
+    }
+    if (codeTmpDir) {
+      setTimeout(() => {
+        try { fs.rmSync(codeTmpDir, { recursive: true, force: true }); } catch { }
+        codeTmpDir = null;
+      }, 1000);
     }
   });
 
@@ -790,6 +957,16 @@ io.on('connection', (socket) => {
   // =============================================================================
   // Release all locks when user disconnects
   socket.on('disconnect', () => {
+    if (codeProcess) {
+      try { killProcessTree(codeProcess); } catch { }
+      codeProcess = null;
+    }
+    if (codeTmpDir) {
+      setTimeout(() => {
+        try { fs.rmSync(codeTmpDir, { recursive: true, force: true }); } catch { }
+        codeTmpDir = null;
+      }, 2000);
+    }
     if (terminalProcess) {
       try { killProcessTree(terminalProcess); } catch { }
       terminalProcess = null;
@@ -1124,6 +1301,43 @@ app.get('/api/check-docker', (req, res) => {
       }
     });
   }
+});
+
+// ====== Check Language Support ======
+app.get('/api/check-language-support', (req, res) => {
+  const checks = {
+    python: { cmd: 'python --version', altCmd: 'python3 --version', name: 'Python 3' },
+    javascript: { cmd: 'node --version', name: 'Node.js' },
+    typescript: { cmd: 'npx --version', name: 'npm/npx' },
+    java: { cmd: 'java -version', name: 'Java Runtime' },
+    'java-compiler': { cmd: 'javac -version', name: 'Java Compiler (JDK)' },
+    cpp: { cmd: process.platform === 'win32' ? 'g++ --version' : 'which g++', name: 'G++ (C++ Compiler)' },
+    c: { cmd: process.platform === 'win32' ? 'gcc --version' : 'which gcc', name: 'GCC (C Compiler)' },
+  };
+
+  const results = {};
+  let completed = 0;
+  const total = Object.keys(checks).length;
+
+  Object.entries(checks).forEach(([lang, config]) => {
+    exec(config.cmd, { stdio: 'ignore' }, (error) => {
+      results[lang] = { name: config.name, installed: !error };
+      if (config.altCmd && error) {
+        exec(config.altCmd, { stdio: 'ignore' }, (altError) => {
+          results[lang].installed = !altError;
+          completed++;
+          if (completed === total) {
+            res.json({ platform: process.platform, languages: results });
+          }
+        });
+      } else {
+        completed++;
+        if (completed === total) {
+          res.json({ platform: process.platform, languages: results });
+        }
+      }
+    });
+  });
 });
 
 app.post('/api/build-container', async (req, res) => {

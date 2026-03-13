@@ -2,11 +2,14 @@
 
 ## Main Entry Point
 
-**`http://localhost:9002/ide`** - Now uses Monaco Editor layout with:
+**`http://localhost:9002/`** - Full auth + session + IDE flow:
+- Auth: `src/app/page.tsx` → `AuthPage` → `SessionDialog` → `MainLayout`
 - File Explorer (left, collapsible)
 - Chat/Participants Panel (middle, collapsible)
 - Monaco Code Editor (center)
 - Output/Terminal (bottom of editor)
+
+> Note: `/ide` redirects to `/` — all IDE logic lives in component files under `src/components/ide/`
 
 ## Build & Development Commands
 
@@ -53,8 +56,9 @@ npm start            # Production start
 ### Frontend (TypeScript/React/Next.js)
 
 #### Monaco Editor Layout
-- File Explorer: `src/app/ide/monaco-test/page.tsx`
-- Main entry: `src/app/ide/page.tsx` (uses Monaco layout)
+- Main entry: `src/app/page.tsx` (renders `MainLayout` after auth + session)
+- IDE components: `src/components/ide/` (file-explorer, code-editor-panel, bottom-panel, header, main-layout)
+- `src/app/ide/page.tsx` redirects to `/` — do not add logic there
 - Editor options: `vs-dark` theme, JetBrains Mono font, word wrap, line numbers
 
 #### Layout Structure
@@ -177,7 +181,8 @@ io.on('connection', (socket) => {
 |----------|----------|
 | UI Components | `frontend/src/components/ui/` |
 | Feature Components | `frontend/src/components/ide/` |
-| Main IDE Entry | `frontend/src/app/ide/page.tsx` |
+| Main IDE Entry | `frontend/src/app/page.tsx` |
+| IDE Components | `frontend/src/components/ide/` |
 | Context/State | `frontend/src/contexts/` |
 | Utilities | `frontend/src/lib/` |
 | Backend Routes | `backend/index.js` |

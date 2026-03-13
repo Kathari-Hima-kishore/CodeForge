@@ -2,34 +2,34 @@
 
 import React, { useState, useRef, useEffect, Suspense, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Code, Play, Loader2, X, FileCode, File } from 'lucide-react';
+import { Play, Loader2, X, FileCode, Lock, Eye } from 'lucide-react';
 import { useSession } from '@/contexts/session-context';
-import { LucideIcon } from 'lucide-react';
 
-// Lazy load Monaco Editor
 const MonacoEditor = React.lazy(() => import('@monaco-editor/react'));
 
-const LANGUAGES: { id: string; name: string; icon: LucideIcon; extension: string; monacoId: string }[] = [
-  { id: 'javascript', name: 'JavaScript', icon: FileCode, extension: '.js', monacoId: 'javascript' },
-  { id: 'typescript', name: 'TypeScript', icon: FileCode, extension: '.ts', monacoId: 'typescript' },
-  { id: 'python', name: 'Python', icon: FileCode, extension: '.py', monacoId: 'python' },
-  { id: 'java', name: 'Java', icon: FileCode, extension: '.java', monacoId: 'java' },
-  { id: 'cpp', name: 'C++', icon: FileCode, extension: '.cpp', monacoId: 'cpp' },
-  { id: 'c', name: 'C', icon: FileCode, extension: '.c', monacoId: 'c' },
-  { id: 'csharp', name: 'C#', icon: FileCode, extension: '.cs', monacoId: 'csharp' },
-  { id: 'html', name: 'HTML', icon: FileCode, extension: '.html', monacoId: 'html' },
-  { id: 'css', name: 'CSS', icon: FileCode, extension: '.css', monacoId: 'css' },
+interface LangConfig {
+  id: string;
+  name: string;
+  monacoId: string;
+  color: string;
+  dot: string;
+}
+
+const LANG_CONFIG: LangConfig[] = [
+  { id: 'javascript', name: 'JS',     monacoId: 'javascript', color: 'text-yellow-400',  dot: 'bg-yellow-400' },
+  { id: 'typescript', name: 'TS',     monacoId: 'typescript', color: 'text-blue-400',    dot: 'bg-blue-400' },
+  { id: 'python',     name: 'Python', monacoId: 'python',     color: 'text-emerald-400', dot: 'bg-emerald-400' },
+  { id: 'java',       name: 'Java',   monacoId: 'java',       color: 'text-orange-400',  dot: 'bg-orange-400' },
+  { id: 'cpp',        name: 'C++',    monacoId: 'cpp',        color: 'text-sky-300',     dot: 'bg-sky-300' },
+  { id: 'c',          name: 'C',      monacoId: 'c',          color: 'text-slate-400',   dot: 'bg-slate-400' },
+  { id: 'csharp',     name: 'C#',     monacoId: 'csharp',     color: 'text-purple-400',  dot: 'bg-purple-400' },
+  { id: 'html',       name: 'HTML',   monacoId: 'html',       color: 'text-red-400',     dot: 'bg-red-400' },
+  { id: 'css',        name: 'CSS',    monacoId: 'css',        color: 'text-pink-400',    dot: 'bg-pink-400' },
 ];
 
-const getLanguageIcon = (language: string): LucideIcon => {
-  const lang = LANGUAGES.find(l => l.id === language);
-  return lang?.icon || File;
-};
-
-const getMonacoLanguage = (language: string): string => {
-  const lang = LANGUAGES.find(l => l.id === language);
-  return lang?.monacoId || 'plaintext';
-};
+function getLang(language: string): LangConfig {
+  return LANG_CONFIG.find(l => l.id === language) || { id: language, name: language, monacoId: 'plaintext', color: 'text-gray-400', dot: 'bg-gray-400' };
+}
 
 export function CodeEditorPanel() {
   const {
@@ -40,29 +40,26 @@ export function CodeEditorPanel() {
     executeCode,
     isExecuting,
     session,
-    user,
   } = useSession();
 
   const editorRef = useRef<any>(null);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [localOpenFileIds, setLocalOpenFileIds] = useState<string[]>([]);
+  const [htmlPreviewOpen, setHtmlPreviewOpen] = useState(false);
 
-  // Initialize open files when files change
   useEffect(() => {
     const fileIds = files.filter(f => !f.isFolder).map(f => f.id);
     if (localOpenFileIds.length === 0 && fileIds.length > 0) {
       setLocalOpenFileIds(fileIds);
     } else {
-      // Filter out deleted files
       setLocalOpenFileIds(prev => prev.filter(id => fileIds.includes(id)));
     }
   }, [files]);
 
   const currentFile = files.find(f => f.id === currentFileId);
   const code = currentFile?.content || '';
-
-  // Check if user has editor role
   const canEdit = session ? ['host', 'co-host', 'editor'].includes(session.role) : true;
+  const lang = getLang(currentFile?.language || 'plaintext');
 
   const handleCodeChange = useCallback((value: string | undefined) => {
     if (currentFileId && canEdit && value !== undefined) {
@@ -70,10 +67,10 @@ export function CodeEditorPanel() {
     }
   }, [currentFileId, canEdit, updateFileContent]);
 
-  const handleRun = async () => {
+  const handleRun = useCallback(() => {
     if (!currentFile) return;
     executeCode(currentFile.language, currentFile.content);
-  };
+  }, [currentFile, executeCode]);
 
   const handleEditorMount = (editor: any) => {
     editorRef.current = editor;
@@ -83,63 +80,53 @@ export function CodeEditorPanel() {
     editor.focus();
   };
 
-  // Global keyboard shortcuts
   useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter') {
-        e.preventDefault();
-        handleRun();
-      }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); handleRun(); }
     };
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleRun]);
 
-  // Release lock when file tab is closed
   const handleCloseFile = (fileId: string) => {
-    const newOpenFiles = localOpenFileIds.filter(id => id !== fileId);
-    setLocalOpenFileIds(newOpenFiles);
+    const next = localOpenFileIds.filter(id => id !== fileId);
+    setLocalOpenFileIds(next);
     if (currentFileId === fileId) {
-      if (newOpenFiles.length > 0) {
-        setCurrentFileId(newOpenFiles[0]);
-      } else {
-        setCurrentFileId(null as unknown as string);
-      }
+      setCurrentFileId(next.length > 0 ? next[0] : null as unknown as string);
     }
   };
 
   return (
-    <div className="h-full flex flex-col min-h-0 bg-[#1e1e1e] text-gray-200">
-      {/* File tabs - only show when there are open files */}
+    <div className="h-full flex flex-col min-h-0 bg-[#0d0e17] text-gray-200">
+
+      {/* File tabs */}
       {localOpenFileIds.length > 0 && (
-        <div className="flex items-center border-b border-gray-700 h-10 px-2 overflow-x-auto bg-[#252526] scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent">
+        <div className="flex items-center h-9 px-1 border-b border-[#1a1b2e] overflow-x-auto bg-[#0a0b14] scrollbar-thin shrink-0">
           {localOpenFileIds.map(fileId => {
             const file = files.find(f => f.id === fileId);
             if (!file || file.isFolder) return null;
-            const Icon = getLanguageIcon(file.language);
+            const fileLang = getLang(file.language);
             const isActive = file.id === currentFileId;
-            const handleClose = (e: React.MouseEvent) => {
-              e.stopPropagation();
-              handleCloseFile(file.id);
-            };
-            const FileIcon = Icon;
             return (
               <div
                 key={file.id}
-                className={`group flex items-center gap-2 px-4 h-full text-sm border-r border-gray-700 cursor-pointer transition-all duration-150 flex-shrink-0 relative ${
+                className={`group flex items-center gap-1.5 px-3 h-full text-[11px] border-r border-[#1a1b2e] cursor-pointer flex-shrink-0 relative select-none transition-colors duration-100 ${
                   isActive
-                    ? 'bg-[#1e1e1e] text-white before:content-[""] before:absolute before:bottom-0 before:left-0 before:right-0 before:h-[2px] before:bg-blue-500'
-                    : 'bg-[#2d2d2d] text-gray-400 hover:text-white hover:bg-[#37373d]'
+                    ? 'bg-[#0d0e17] text-white/90'
+                    : 'bg-[#0a0b14] text-gray-500 hover:text-gray-300 hover:bg-[#0c0d1a]'
                 }`}
                 onClick={() => setCurrentFileId(file.id)}
               >
-                <FileIcon className="h-4 w-4" />
+                {isActive && (
+                  <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-blue-500/70 rounded-t" />
+                )}
+                <div className={`w-1.5 h-1.5 rounded-full ${fileLang.dot} opacity-80 flex-shrink-0`} />
                 <span className="max-w-[120px] truncate font-medium">{file.name}</span>
                 <button
-                  onClick={handleClose}
-                  className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-all ml-1 rounded-sm hover:bg-red-500/20 p-0.5"
+                  onClick={(e) => { e.stopPropagation(); handleCloseFile(file.id); }}
+                  className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:text-red-400 transition-all rounded p-0.5 -mr-0.5"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-2.5 w-2.5" />
                 </button>
               </div>
             );
@@ -148,76 +135,143 @@ export function CodeEditorPanel() {
       )}
 
       {/* Toolbar */}
-      <div className="flex items-center justify-between border-b border-gray-700 h-12 px-4 bg-[#252526]">
-        <div className="flex items-center gap-4 text-sm">
-          <div className="flex items-center gap-2">
-            <Code className="h-4 w-4 text-blue-400" />
-            <span className="font-semibold text-gray-200">{currentFile?.name || 'No file'}</span>
-          </div>
-          <span className="text-gray-500 text-xs font-mono bg-[#3c3c3c] px-2 py-0.5 rounded">
-            Ln {cursorPosition.line}, Col {cursorPosition.column}
-          </span>
+      <div className="flex items-center justify-between border-b border-[#1a1b2e] h-10 px-4 bg-[#0a0b14]/60 shrink-0">
+        <div className="flex items-center gap-3 text-sm min-w-0">
+          {currentFile ? (
+            <>
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#1a1b2e] border border-[#252640]/60">
+                <div className={`w-1.5 h-1.5 rounded-full ${lang.dot} opacity-90`} />
+                <span className={`text-[11px] font-bold font-mono ${lang.color}`}>{lang.name}</span>
+              </div>
+              <span className="text-[13px] font-medium text-gray-300/80 truncate">{currentFile.name}</span>
+              <span className="text-[10px] text-gray-600 font-mono shrink-0 tabular-nums">
+                {cursorPosition.line}:{cursorPosition.column}
+              </span>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-gray-600">
+              <FileCode className="h-4 w-4" />
+              <span className="text-[13px]">No file selected</span>
+            </div>
+          )}
           {!canEdit && (
-            <span className="text-xs bg-yellow-500/20 text-yellow-500 px-2.5 py-1 rounded-full font-medium border border-yellow-500/20">
-              👁 View Only
-            </span>
+            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-500/10 border border-yellow-500/20 text-yellow-400/80 text-[10px] shrink-0">
+              <Lock className="h-2.5 w-2.5" />
+              View Only
+            </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+
+        <Button
+          size="sm"
+          onClick={handleRun}
+          disabled={isExecuting || !currentFile || !canEdit}
+          className="flex items-center gap-1.5 bg-emerald-600/90 hover:bg-emerald-500 disabled:bg-[#1a1b2e] disabled:text-gray-600 text-white font-semibold px-3.5 h-7 text-[12px] transition-all rounded-md shadow-sm"
+        >
+          {isExecuting ? (
+            <><Loader2 className="h-3 w-3 animate-spin" /> Running</>
+          ) : (
+            <><Play className="h-3 w-3 fill-current" /> Run</>
+          )}
+          {!isExecuting && (
+            <kbd className="ml-0.5 text-[9px] bg-emerald-700/50 px-1.5 py-0.5 rounded font-mono opacity-70">
+              ⌃↵
+            </kbd>
+          )}
+        </Button>
+
+        {currentFile?.language === 'html' && (
           <Button
             size="sm"
-            className="gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold"
-            onClick={handleRun}
-            disabled={isExecuting || !currentFile}
+            onClick={() => setHtmlPreviewOpen(true)}
+            disabled={!currentFile}
+            className="flex items-center gap-1.5 bg-sky-600/90 hover:bg-sky-500 text-white font-semibold px-3.5 h-7 text-[12px] transition-all rounded-md shadow-sm"
           >
-            {isExecuting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-            {isExecuting ? 'Running...' : 'Run'}
+            <Eye className="h-3 w-3" /> Preview
           </Button>
-        </div>
+        )}
       </div>
 
-      {/* Editor Area */}
+      {/* Editor area */}
       <div className="flex-1 min-h-0 overflow-hidden relative">
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center h-full bg-[#1e1e1e]">
-              <div className="flex flex-col items-center gap-3">
-                <Loader2 className="h-8 w-8 animate-spin text-blue-400" />
-                <span className="text-sm text-gray-400">Loading editor...</span>
+        {!currentFile ? (
+          <div className="flex flex-col items-center justify-center h-full gap-4 select-none">
+            <div className="relative">
+              <div className="absolute inset-0 bg-blue-500/5 blur-2xl rounded-full scale-[2]" />
+              <div className="relative w-14 h-14 rounded-2xl bg-[#1a1b2e] border border-[#252640] flex items-center justify-center">
+                <FileCode className="h-7 w-7 text-gray-600" />
               </div>
             </div>
-          }
-        >
-          <MonacoEditor
-            height="100%"
-            language={getMonacoLanguage(currentFile?.language || 'plaintext')}
-            value={code}
-            onChange={handleCodeChange}
-            onMount={handleEditorMount}
-            theme="vs-dark"
-            options={{
-              readOnly: !canEdit,
-              minimap: { enabled: true },
-              fontSize: 14,
-              fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-              lineNumbers: 'on',
-              renderLineHighlight: 'all',
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              tabSize: 4,
-              wordWrap: 'on',
-              padding: { top: 16, bottom: 16 },
-              cursorBlinking: 'smooth',
-              cursorSmoothCaretAnimation: 'on',
-              smoothScrolling: true,
-            }}
-          />
-        </Suspense>
+            <div className="text-center space-y-1">
+              <p className="text-[13px] font-medium text-gray-500">No file open</p>
+              <p className="text-[11px] text-gray-700">Select a file from the explorer to start editing</p>
+            </div>
+          </div>
+        ) : (
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center h-full bg-[#0d0e17]">
+                <div className="flex flex-col items-center gap-3">
+                  <Loader2 className="h-6 w-6 animate-spin text-blue-400/60" />
+                  <span className="text-[12px] text-gray-600">Loading editor…</span>
+                </div>
+              </div>
+            }
+          >
+            <MonacoEditor
+              height="100%"
+              language={getLang(currentFile.language).monacoId}
+              value={code}
+              onChange={handleCodeChange}
+              onMount={handleEditorMount}
+              theme="vs-dark"
+              options={{
+                readOnly: !canEdit,
+                minimap: { enabled: true },
+                fontSize: 14,
+                fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                lineNumbers: 'on',
+                renderLineHighlight: 'all',
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                tabSize: 4,
+                wordWrap: 'on',
+                padding: { top: 16, bottom: 16 },
+                cursorBlinking: 'smooth',
+                cursorSmoothCaretAnimation: 'on',
+                smoothScrolling: true,
+                bracketPairColorization: { enabled: true },
+                guides: { bracketPairs: true },
+              }}
+            />
+          </Suspense>
+        )}
       </div>
+
+      {/* HTML Preview Modal */}
+      {htmlPreviewOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-background border border-border/50 rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-border/30">
+              <h2 className="text-lg font-semibold">HTML Preview</h2>
+              <button
+                onClick={() => setHtmlPreviewOpen(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <iframe
+                srcDoc={currentFile?.content || ''}
+                className="w-full h-full border-0"
+                title="HTML Preview"
+                sandbox="allow-scripts allow-same-origin"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
