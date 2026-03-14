@@ -14,21 +14,37 @@ out/
 build/
 dist/
 
-# Environment variables
+# Environment variables — NEVER COMMIT CREDENTIALS
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Firebase
+# Firebase — SENSITIVE FILES
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
 firebase-service-account.json
 *-service-account.json
+*.service-account.json
+
+# AWS / GCP / Azure credentials
+*credentials*.json
+*secret*.json
+*.pem
+*.key
 
 # IDEs and Editors
 .vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 .idea/
+.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
@@ -36,8 +52,9 @@ firebase-service-account.json
 *.sw?
 
 # OS files
-.DS_Store
 Thumbs.db
+.dropbox
+*~
 
 # Logs
 *.log
@@ -45,13 +62,23 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+lerna-debug.log*
 
 # Misc
 .vercel
+.env.*.local
 *.tsbuildinfo
 next-env.d.ts
 ngrok.exe
+ngrok.yml
 temp/
 *.tmp
 nul
+
+# Sensitive documentation
+SECRETS.md
+credentials.md
+CREDENTIALS.md
+*KEYS*
+
 
