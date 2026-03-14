@@ -265,13 +265,7 @@ Storage: codeforge-khk.firebasestorage.app
 
 **Frontend** (`frontend/.env.local`):
 ```env
-NEXT_PUBLIC_FIREBASE_API_KEY=AIzaSyCacO3xAjNCWdy774jKjCcP4rrwcUoSzmo
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=codeforge-khk.firebaseapp.com
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=codeforge-khk
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=codeforge-khk.firebasestorage.app
-NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=661234466057
-NEXT_PUBLIC_FIREBASE_APP_ID=1:661234466057:web:fc0af044739b9c5e9da7d8
-NEXT_PUBLIC_BACKEND_URL=http://localhost:5005  # ⚠️ Should be 5001
+
 ```
 
 **Backend** (`backend/index.js`):
